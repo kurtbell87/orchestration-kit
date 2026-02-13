@@ -39,8 +39,12 @@ MAX_PROGRAM_CYCLES="${MAX_PROGRAM_CYCLES:-20}"
 CONSTRUCTIONS_FILE="${CONSTRUCTIONS_FILE:-CONSTRUCTIONS.md}"
 
 # Log directory -- per-project isolation under /tmp
-_project_name="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-MATH_LOG_DIR="${MATH_LOG_DIR:-/tmp/math-${_project_name}}"
+# Uses repo basename + short hash of absolute path to prevent collisions
+# between projects with the same name in different locations.
+_project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_project_name="$(basename "$_project_root")"
+_project_hash="$(printf '%s' "$_project_root" | shasum -a 256 | cut -c1-6)"
+MATH_LOG_DIR="${MATH_LOG_DIR:-/tmp/math-${_project_name}-${_project_hash}}"
 export MATH_LOG_DIR
 mkdir -p "$MATH_LOG_DIR"
 

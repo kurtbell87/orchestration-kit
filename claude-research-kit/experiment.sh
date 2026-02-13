@@ -40,8 +40,12 @@ MAX_GPU_HOURS="${MAX_GPU_HOURS:-4}"
 MAX_RUNS="${MAX_RUNS:-10}"
 
 # Log directory -- per-project isolation under /tmp
-_project_name="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-EXP_LOG_DIR="${EXP_LOG_DIR:-/tmp/exp-${_project_name}}"
+# Uses repo basename + short hash of absolute path to prevent collisions
+# between projects with the same name in different locations.
+_project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_project_name="$(basename "$_project_root")"
+_project_hash="$(printf '%s' "$_project_root" | shasum -a 256 | cut -c1-6)"
+EXP_LOG_DIR="${EXP_LOG_DIR:-/tmp/exp-${_project_name}-${_project_hash}}"
 export EXP_LOG_DIR
 mkdir -p "$EXP_LOG_DIR"
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(os.environ["PROJECT_ROOT"]) if os.environ.get("PROJECT_ROOT") else None
 RUNS_DIR = REPO_ROOT / "runs"
 INTEROP_REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
 
@@ -108,6 +109,11 @@ def int_env(name: str, default: int) -> int:
 
 
 def rel_repo(path: Path) -> str:
+    if PROJECT_ROOT is not None:
+        try:
+            return str(path.relative_to(PROJECT_ROOT))
+        except ValueError:
+            pass
     try:
         return str(path.relative_to(REPO_ROOT))
     except ValueError:
@@ -291,7 +297,7 @@ def run_phase(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     config = KIT_CONFIG[args.kit]
-    cwd: Path = config["cwd"]
+    cwd: Path = PROJECT_ROOT if PROJECT_ROOT is not None else config["cwd"]
     script: str = config["script"]
 
     run_id = args.run_id or make_run_id()
@@ -332,6 +338,8 @@ def run_phase(argv: list[str]) -> int:
             "READ_BUDGET_STATE_DIR": str(run_root / "artifacts"),
         }
     )
+    if PROJECT_ROOT is not None:
+        env["PROJECT_ROOT"] = str(PROJECT_ROOT)
     if args.parent_run_id:
         env["PARENT_RUN_ID"] = args.parent_run_id
 

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Monorepo bootstrap for master-kit.
 #
-# This script intentionally does NOT call per-kit install.sh scripts.
-# In monorepo mode, root .claude settings/hooks and tools/* are source-controlled.
+# This script does NOT call per-kit install.sh scripts (those do heavy
+# project-specific setup like Lean4 toolchain init).  Instead it seeds the
+# lightweight state-tracking files and working directories each kit expects
+# at runtime, then validates structure and runs the smoke test.
 #
 # Usage:
 #   tools/bootstrap
@@ -18,6 +20,7 @@ cd "$ROOT_DIR"
 CHECK_ONLY=0
 SKIP_SMOKE=0
 INSTALL_PYTHON=0
+GREENFIELD=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_PYTHON=1
       shift
       ;;
+    --greenfield)
+      GREENFIELD=1
+      shift
+      ;;
     -h|--help)
       cat <<'USAGE'
 Usage: tools/bootstrap [options]
@@ -41,6 +48,7 @@ Options:
   --check-only      Run checks only (no chmod fixes, no installs, no smoke run).
   --skip-smoke      Skip tools/smoke-run.
   --install-python  Install dependencies from requirements.txt if present.
+  --greenfield      Skip workspace seeding (install.sh seeds to project root instead).
   -h, --help        Show this help text.
 USAGE
       exit 0
@@ -140,6 +148,65 @@ require_executable "tools/pump"
 require_executable "tools/smoke-run"
 require_executable ".claude/hooks/pre-tool-use.sh"
 echo "[bootstrap] executable checks: ok"
+
+# ── Seed kit workspaces ──
+# Each kit's install.sh deploys state-tracking templates and working directories
+# into a target project.  In the monorepo the kit subdirectory IS the working
+# directory (tools/kit cd's into it), so we seed directly there.
+
+copy_if_missing() {
+  local src="$1" dest="$2"
+  if [[ ! -f "$dest" ]]; then
+    cp "$src" "$dest"
+    echo "[bootstrap]   created $(basename "$dest")"
+  fi
+}
+
+seed_kit_workspaces() {
+  echo "[bootstrap] seeding kit workspaces"
+
+  # ── TDD Kit ──
+  local tdd="$ROOT_DIR/claude-tdd-kit"
+  mkdir -p "$tdd/docs"
+  copy_if_missing "$tdd/templates/LAST_TOUCH.md" "$tdd/LAST_TOUCH.md"
+  copy_if_missing "$tdd/templates/PRD.md"        "$tdd/PRD.md"
+  if [[ ! -f "$tdd/CLAUDE.md" && -f "$tdd/templates/CLAUDE.md.snippet" ]]; then
+    cp "$tdd/templates/CLAUDE.md.snippet" "$tdd/CLAUDE.md"
+    echo "[bootstrap]   created CLAUDE.md (tdd)"
+  fi
+
+  # ── Research Kit ──
+  local research="$ROOT_DIR/claude-research-kit"
+  mkdir -p "$research/experiments" "$research/results" "$research/handoffs/completed"
+  copy_if_missing "$research/templates/RESEARCH_LOG.md"  "$research/RESEARCH_LOG.md"
+  copy_if_missing "$research/templates/QUESTIONS.md"      "$research/QUESTIONS.md"
+  copy_if_missing "$research/templates/DOMAIN_PRIORS.md" "$research/DOMAIN_PRIORS.md"
+  if [[ ! -f "$research/CLAUDE.md" && -f "$research/templates/CLAUDE.md.snippet" ]]; then
+    cp "$research/templates/CLAUDE.md.snippet" "$research/CLAUDE.md"
+    echo "[bootstrap]   created CLAUDE.md (research)"
+  fi
+
+  # ── Mathematics Kit ──
+  local math="$ROOT_DIR/claude-mathematics-kit"
+  mkdir -p "$math/specs" "$math/results"
+  copy_if_missing "$math/templates/CONSTRUCTIONS.md"     "$math/CONSTRUCTIONS.md"
+  copy_if_missing "$math/templates/CONSTRUCTION_LOG.md"  "$math/CONSTRUCTION_LOG.md"
+  copy_if_missing "$math/templates/DOMAIN_CONTEXT.md"    "$math/DOMAIN_CONTEXT.md"
+  if [[ ! -f "$math/CLAUDE.md" && -f "$math/templates/CLAUDE.md.snippet" ]]; then
+    cp "$math/templates/CLAUDE.md.snippet" "$math/CLAUDE.md"
+    echo "[bootstrap]   created CLAUDE.md (math)"
+  fi
+
+  echo "[bootstrap] kit workspaces seeded"
+}
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  echo "[bootstrap] check-only mode: skipping workspace seeding"
+elif [[ "$GREENFIELD" -eq 1 ]]; then
+  echo "[bootstrap] greenfield mode: skipping workspace seeding (install.sh seeds project root)"
+else
+  seed_kit_workspaces
+fi
 
 if [[ "$INSTALL_PYTHON" -eq 1 ]]; then
   if [[ -f "requirements.txt" ]]; then

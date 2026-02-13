@@ -247,15 +247,15 @@ apply_read_budget_guardrail
 
 # Phase-specific dispatch (reuse existing kit rules verbatim).
 if [[ -n "${TDD_PHASE:-}" ]]; then
-  run_hook_if_exists "$ROOT_DIR/claude-tdd-kit/.claude/hooks/pre-tool-use.sh" "tdd"
+  run_hook_if_exists "$MASTER_KIT_ROOT/claude-tdd-kit/.claude/hooks/pre-tool-use.sh" "tdd"
 fi
 
 if [[ -n "${EXP_PHASE:-}" ]]; then
-  run_hook_if_exists "$ROOT_DIR/claude-research-kit/.claude/hooks/pre-tool-use.sh" "research"
+  run_hook_if_exists "$MASTER_KIT_ROOT/claude-research-kit/.claude/hooks/pre-tool-use.sh" "research"
 fi
 
 if [[ -n "${MATH_PHASE:-}" ]]; then
-  run_hook_if_exists "$ROOT_DIR/claude-mathematics-kit/.claude/hooks/pre-tool-use.sh" "math"
+  run_hook_if_exists "$MASTER_KIT_ROOT/claude-mathematics-kit/.claude/hooks/pre-tool-use.sh" "math"
 fi
 
 exit 0

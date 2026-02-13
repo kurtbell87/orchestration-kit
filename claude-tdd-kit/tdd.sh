@@ -43,10 +43,13 @@ BUILD_CMD="${BUILD_CMD:-echo 'Set BUILD_CMD for your project'}"
 TEST_CMD="${TEST_CMD:-echo 'Set TEST_CMD for your project'}"
 
 # Log directory -- per-project isolation under /tmp
-# Derived from the git repo name (or directory name as fallback).
+# Uses repo basename + short hash of absolute path to prevent collisions
+# between projects with the same name in different locations.
 # Override with TDD_LOG_DIR env var if needed.
-_project_name="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-TDD_LOG_DIR="${TDD_LOG_DIR:-/tmp/tdd-${_project_name}}"
+_project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_project_name="$(basename "$_project_root")"
+_project_hash="$(printf '%s' "$_project_root" | shasum -a 256 | cut -c1-6)"
+TDD_LOG_DIR="${TDD_LOG_DIR:-/tmp/tdd-${_project_name}-${_project_hash}}"
 export TDD_LOG_DIR
 mkdir -p "$TDD_LOG_DIR"
 
