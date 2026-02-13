@@ -9,7 +9,18 @@ This guide configures the local Master-Kit MCP server for both Claude Code and C
 - repository checked out locally
 - existing `tools/kit`, `tools/pump`, and `tools/query-log`
 
-## 1) Set environment variables
+## 1) Run installer (recommended)
+
+From repo root:
+
+```bash
+./install.sh
+source .master-kit.env
+```
+
+This bootstraps tooling, creates an MCP token, and writes `.master-kit.env`.
+
+## 2) Set environment variables manually (alternative)
 
 From repo root:
 
@@ -23,7 +34,7 @@ export MASTER_KIT_MCP_TOKEN="$(tools/mcp-token)"
 
 Persist these in your shell profile if needed.
 
-## 2) Start MCP server
+## 3) Start MCP server
 
 ```bash
 tools/mcp-serve
@@ -34,7 +45,7 @@ Expected startup line includes:
 - `master-kit mcp ready`
 - URL `http://127.0.0.1:7337/mcp`
 
-## 3) Configure Claude Code
+## 4) Configure Claude Code
 
 Use project-scoped config or CLI registration (depending on your Claude version).
 
@@ -61,7 +72,7 @@ claude mcp add --scope project master-kit http://127.0.0.1:7337/mcp \
   --header "Authorization: Bearer $MASTER_KIT_MCP_TOKEN"
 ```
 
-## 4) Configure Codex CLI
+## 5) Configure Codex CLI
 
 Edit `~/.codex/config.toml`:
 
@@ -75,7 +86,7 @@ Authorization = "Bearer YOUR_TOKEN_HERE"
 
 Replace `YOUR_TOKEN_HERE` with your token value.
 
-## 5) Validate connectivity
+## 6) Validate connectivity
 
 Use either Claude or Codex MCP client to call:
 
@@ -88,7 +99,7 @@ Verify result contains pointers such as:
 - `manifest_path`
 - `events_path`
 
-## 6) Cross-spawn workers
+## 7) Cross-spawn workers
 
 Wrappers execute one request and preserve MCP env:
 
@@ -103,7 +114,7 @@ If direct CLI MCP invocation flags are unavailable, wrappers fallback to:
 tools/pump --once --request <request_id> --json
 ```
 
-## 7) Stop server
+## 8) Stop server
 
 Foreground run:
 

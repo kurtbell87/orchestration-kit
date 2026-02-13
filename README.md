@@ -71,21 +71,45 @@ master-kit/
 
 ## Quick Start
 
-1. Bootstrap checks and executable bits:
+Greenfield example:
 
 ```bash
-tools/bootstrap
+git clone https://github.com/kurtbell87/master-kit.git my-project
+cd my-project
+./install.sh
+source .master-kit.env
 ```
 
-2. Run smoke validation:
+1. One-command install/bootstrap:
+
+```bash
+./install.sh
+```
+
+2. Load MCP environment:
+
+```bash
+source .master-kit.env
+```
+
+3. Start MCP server:
+
+```bash
+tools/mcp-serve
+```
+
+4. Verify orchestrator + MCP path:
+
+```bash
+tools/kit --json research status
+```
+
+## Validation
+
+Run smoke + tests:
 
 ```bash
 tools/smoke-run
-```
-
-3. Run test suite:
-
-```bash
 python3 -m unittest discover -s tests -v
 ```
 
@@ -167,6 +191,7 @@ See full setup details in `docs/MCP_SETUP.md`.
 ## Tool Reference
 
 - `tools/bootstrap`: monorepo bootstrap checks and optional smoke run.
+- `install.sh`: one-command fresh-checkout installer (bootstrap + optional MCP env setup).
 - `tools/kit`: run orchestration entrypoint plus `request` authoring helper.
 - `tools/pump`: executes queued interop requests.
 - `tools/query-log`: bounded log access helpers.
