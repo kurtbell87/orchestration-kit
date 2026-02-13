@@ -42,8 +42,19 @@ Run artifacts land in `master-kit/runs/<run_id>/` — capsules, manifests, logs,
 - Don't `cd` into `master-kit/` and run kit scripts from there — run from project root.
 - Don't `cat` full log files — use `master-kit/tools/query-log`.
 - Don't explore the codebase to "understand" it — read state files first.
-- **Don't independently verify kit sub-agent work.** Each phase (red, green, refactor, run, prove, etc.) spawns a dedicated sub-agent that does its own verification. Trust the exit code and capsule. Do NOT re-run tests, re-read logs, re-check build output, or otherwise duplicate work the sub-agent already did. Exit 0 + capsule = done. Exit 1 = read the capsule for the failure, don't grep the log.
-- Don't read phase log files to "see what happened" after a successful phase. The capsule is the summary. Logs are for debugging failures only.
+- **Don't independently verify kit sub-agent work.** Each phase spawns a dedicated sub-agent that does its own verification. Trust the exit code and capsule. Do NOT re-run tests, re-read logs, re-check build output, or otherwise duplicate work the sub-agent already did. Exit 0 + capsule = done. Exit 1 = read the capsule for the failure, don't grep the log.
+- Don't read phase log files after a successful phase. Logs are for debugging failures only.
+
+## Orchestrator Discipline (MANDATORY)
+
+You are the orchestrator. Sub-agents do the work. Your job is to sequence phases and react to exit codes. Protect your context window.
+
+1. **Run phases in background, check only the exit code.** Do not read the TaskOutput content — the JSON blob wastes context. Check `status: completed/failed` and `exit_code` only.
+2. **Never run Bash for verification.** No `pytest`, `lake build`, `ls`, `cat`, `grep` to check what a sub-agent produced. If the phase exited 0, it worked.
+3. **Never read implementation files** the sub-agents wrote (source code, test files, .lean files, experiment scripts). That is their domain. You read only state files (CLAUDE.md, LAST_TOUCH.md, RESEARCH_LOG.md, etc.).
+4. **Chain phases by exit code only.** Exit 0 → next phase. Exit 1 → read the capsule (not the log), decide whether to retry or stop.
+5. **Never read capsules after success.** Capsules exist for failure diagnosis and interop handoffs. A successful phase needs no capsule read.
+6. **Minimize tool calls.** Each Bash call, Read, or Glob adds to your context. If the information isn't needed to decide the next action, don't fetch it.
 
 ## Breadcrumb Maintenance (MANDATORY)
 
