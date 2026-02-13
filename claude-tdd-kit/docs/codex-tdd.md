@@ -31,3 +31,4 @@ tddc-ship docs/my-feature.md
 - Keep `AGENTS.md` updated (install from `templates/AGENTS.md.snippet`) for Codex-first projects.
 - `ship` runs the breadcrumbs phase before commit/PR so docs are always refreshed.
 - Logs are still written to `$TDD_LOG_DIR` and summarized compactly on stdout.
+- `CODEX_SANDBOX_NETWORK_DISABLED` defaults to `0`; if it is `1` (or `true`), Codex CLI cannot reach its API from this shell. Run from a non-isolated shell or switch to `TDD_AGENT_BIN=claude`.

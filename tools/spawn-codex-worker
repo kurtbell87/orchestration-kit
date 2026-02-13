@@ -60,6 +60,7 @@ if [[ -z "${MASTER_KIT_MCP_TOKEN:-}" ]]; then
 fi
 
 export MASTER_KIT_MCP_URL="http://${MASTER_KIT_MCP_HOST}:${MASTER_KIT_MCP_PORT}/mcp"
+CODEX_SANDBOX_NETWORK_DISABLED="${CODEX_SANDBOX_NETWORK_DISABLED:-0}"
 
 run_fallback() {
   cd "$PROJECT_ROOT"
@@ -68,6 +69,13 @@ run_fallback() {
 
 attempt_codex() {
   command -v codex >/dev/null 2>&1 || return 1
+
+  case "$CODEX_SANDBOX_NETWORK_DISABLED" in
+    1|true|TRUE|yes|YES|on|ON)
+      echo "Codex worker skipped: shell network isolation is enabled (CODEX_SANDBOX_NETWORK_DISABLED=${CODEX_SANDBOX_NETWORK_DISABLED}). Falling back to pump." >&2
+      return 1
+      ;;
+  esac
 
   local help_out
   help_out="$(codex --help 2>&1 || true)"

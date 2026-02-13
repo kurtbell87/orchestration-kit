@@ -164,6 +164,13 @@ tdd-unlock
 - Ensure `.claude/settings.json` contains `Read|Edit|Write|MultiEdit|Bash` matcher.
 - Ensure hook is executable: `chmod +x .claude/hooks/pre-tool-use.sh`.
 
+- Codex phase exits with disconnect/rollout-recorder errors:
+- Check `CODEX_SANDBOX_NETWORK_DISABLED` (default: `0`). If it is `1` (or `true`), this shell cannot reach Codex APIs.
+- Run in a non-isolated shell, or switch backend for the phase:
+```bash
+TDD_AGENT_BIN=claude ./tdd.sh <phase>
+```
+
 - GREEN appears to “fight” tests:
 - Expected if agent tries to modify tests.
 - Keep iterating implementation only; tests are the spec.

@@ -26,6 +26,8 @@ HOOK_DIR="${HOOK_DIR:-.claude/hooks}"            # Hook scripts
 # Supported values: claude, codex
 TDD_AGENT_BIN="${TDD_AGENT_BIN:-claude}"
 TDD_AGENT_EXTRA_ARGS="${TDD_AGENT_EXTRA_ARGS:-}"
+# Codex network-isolation signal (injected by some sandboxed shells). Defaults to 0.
+CODEX_SANDBOX_NETWORK_DISABLED="${CODEX_SANDBOX_NETWORK_DISABLED:-0}"
 
 # Optional codex-specific prompt pack. If PROMPT_DIR was not overridden and
 # codex prompts exist, prefer them when TDD_AGENT_BIN=codex.
@@ -152,6 +154,21 @@ _run_codex_agent() {
     echo -e "${RED}Error: codex CLI not found in PATH.${NC}" >&2
     return 127
   fi
+
+  case "$CODEX_SANDBOX_NETWORK_DISABLED" in
+    1|true|TRUE|yes|YES|on|ON)
+      cat > "$log_file" <<LOG
+[codex-network-isolation]
+CODEX_SANDBOX_NETWORK_DISABLED=${CODEX_SANDBOX_NETWORK_DISABLED}
+Codex CLI calls need outbound network access and were skipped.
+Run this phase from a non-isolated shell, or switch backend:
+  TDD_AGENT_BIN=claude ./tdd.sh $phase
+LOG
+      echo -e "${RED}Error: Codex backend blocked by shell network isolation (CODEX_SANDBOX_NETWORK_DISABLED=${CODEX_SANDBOX_NETWORK_DISABLED}).${NC}" >&2
+      echo -e "${YELLOW}Hint:${NC} Run outside this sandbox or switch backend: TDD_AGENT_BIN=claude ./tdd.sh $phase" >&2
+      return 69
+      ;;
+  esac
 
   local help_out
   help_out="$(codex --help 2>&1 || true)"
