@@ -482,6 +482,16 @@ mkdir -p src tests
 touch src/__init__.py
 touch tests/__init__.py
 
+# --- Lean4 project (for math kit formalization) ---
+if command -v lake &>/dev/null; then
+  echo "[toy] initializing Lean4 project for math kit"
+  lake init fib_fast_lean math 2>&1 | head -5
+  echo "[toy]   Lean4 project initialized"
+else
+  echo "[toy] WARN: lake not found — math kit FORMALIZE/PROVE phases will fail"
+  echo "[toy]   install elan (https://github.com/leanprover/elan) to enable"
+fi
+
 echo "[toy] seed files written"
 
 # ── Step 3: Overwrite CLAUDE.md ──────────────────────────────────────────────

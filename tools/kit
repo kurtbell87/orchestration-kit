@@ -232,20 +232,32 @@ def fallback_capsule(
     manifest_path: Path,
 ) -> list[str]:
     status = "ok" if exit_code == 0 else "failed"
-    return [
+    lines = [
         f"Goal: Execute {kit}.{phase} in master-kit orchestration.",
         f"What happened: Command finished with exit code {exit_code}.",
         f"Current status: {status}.",
-        "Next action requested (exactly one): Review manifest pointers and decide next phase.",
+    ]
+    # On failure, include the last lines of the log so the capsule is
+    # actionable without requiring a separate log read.
+    if exit_code != 0 and log_path.exists():
+        try:
+            raw = log_path.read_text(encoding="utf-8", errors="replace")
+            # Strip ANSI escape codes for readability.
+            raw = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+            tail = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
+            tail = tail[-15:]  # last 15 non-blank lines
+            if tail:
+                lines.append("Error output (last lines of log):")
+                lines.extend(f"  {ln}" for ln in tail)
+        except OSError:
+            pass
+    lines.extend([
         "Evidence pointers:",
         f"- log: {rel_repo(log_path)}",
         f"- manifest: {rel_repo(manifest_path)}",
-        (
-            "If blocked: error signature + where to find full trace: "
-            f"see exit_code={exit_code} in {rel_repo(log_path)}"
-        ),
         f"Run: {run_id}",
-    ]
+    ])
+    return lines
 
 
 def write_capsule(
