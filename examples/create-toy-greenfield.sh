@@ -543,6 +543,8 @@ Run artifacts land in `master-kit/runs/<run_id>/`.
 - Don't `cd` into `master-kit/` and run kit scripts from there.
 - Don't `cat` full log files — use `master-kit/tools/query-log`.
 - Don't explore the codebase to "understand" it — read state files first.
+- **Don't independently verify kit sub-agent work.** Each phase spawns a dedicated sub-agent that does its own verification. Trust the exit code and capsule. Do NOT re-run tests, re-read logs, re-check build output, or otherwise duplicate work the sub-agent already did. Exit 0 + capsule = done. Exit 1 = read the capsule for the failure, don't grep the log.
+- Don't read phase log files after a successful phase. The capsule is the summary. Logs are for debugging failures only.
 
 ## Breadcrumb Maintenance (MANDATORY)
 

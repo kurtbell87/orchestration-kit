@@ -67,6 +67,8 @@ tools/query-log grep 'ERROR' runs/<run_id>/logs/<kit>_<phase>.log
 - Don't `cat` full log files — use `tools/query-log`.
 - Don't dump transcripts or large outputs into capsules or interop requests — use file pointers.
 - Don't skip reading capsules before reading logs. Capsules are the summary; logs are the detail.
+- **Don't independently verify kit sub-agent work.** Each phase spawns a dedicated sub-agent that does its own verification. Trust the exit code and capsule. Do NOT re-run tests, re-read logs, re-check build output, or otherwise duplicate work the sub-agent already did. Exit 0 + capsule = done. Exit 1 = read the capsule for the failure, don't grep the log.
+- Don't read phase log files after a successful phase. The capsule is the summary. Logs are for debugging failures only.
 
 ## MCP Server (Optional)
 
