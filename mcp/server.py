@@ -130,6 +130,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "from_kit": {"type": "string", "enum": ["tdd", "research", "math"]},
+                "from_phase": {"type": "string"},
                 "to_kit": {"type": "string", "enum": ["tdd", "research", "math"]},
                 "action": {"type": "string"},
                 "args": {"type": "array", "items": {"type": "string"}},
@@ -256,6 +257,9 @@ class MasterKitFacade:
 
     def _tool_request_create(self, payload: dict[str, Any]) -> dict[str, Any]:
         from_kit = require_str(payload, "from_kit")
+        from_phase = payload.get("from_phase")
+        if from_phase is not None and (not isinstance(from_phase, str) or not from_phase.strip()):
+            raise ValueError("from_phase must be a non-empty string when provided")
         to_kit = require_str(payload, "to_kit")
         action = require_str(payload, "action")
 
@@ -310,6 +314,8 @@ class MasterKitFacade:
             "--priority",
             priority,
         ]
+        if isinstance(from_phase, str) and from_phase.strip():
+            cmd.extend(["--from-phase", from_phase])
 
         for item in args:
             cmd.extend(["--arg", item])

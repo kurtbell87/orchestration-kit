@@ -16,6 +16,7 @@ It adds shared run orchestration, interop handoffs, anti-bloat guardrails, and a
 - Master hook enforcement across TDD, Research, and Math phases
 - Bounded log querying via `tools/query-log`
 - Local authenticated MCP server for Claude Code and Codex CLI
+- Global run dashboard with per-project filtering via `tools/dashboard`
 
 ## Core Design Invariants
 
@@ -51,6 +52,7 @@ master-kit/
   tests/
   tools/
     bootstrap
+    dashboard
     kit
     pump
     query-log
@@ -150,6 +152,26 @@ tools/kit request \
 tools/pump --once --request <request_id> --json
 ```
 
+Requests are not restricted by source/target pair: any kit phase can route to any other kit phase (including self-routes), e.g. `tdd -> research -> math -> tdd`.
+
+### Global dashboard (multi-project)
+
+Register one or more cloned projects:
+
+```bash
+tools/dashboard register --master-kit-root /path/to/project-a/master-kit --project-root /path/to/project-a
+tools/dashboard register --master-kit-root /path/to/project-b/master-kit --project-root /path/to/project-b
+```
+
+Build index and serve:
+
+```bash
+tools/dashboard index
+tools/dashboard serve --host 127.0.0.1 --port 7340
+```
+
+Open `http://127.0.0.1:7340` and filter by project to inspect active agents, run threads, and cross-phase edges.
+
 ### Query logs without large reads
 
 ```bash
@@ -195,6 +217,7 @@ See full setup details in `docs/MCP_SETUP.md`.
 - `tools/kit`: run orchestration entrypoint plus `request` authoring helper.
 - `tools/pump`: executes queued interop requests.
 - `tools/query-log`: bounded log access helpers.
+- `tools/dashboard`: global project registry + run index + local dashboard server.
 - `tools/smoke-run`: end-to-end sanity flow (research -> request -> pump -> validate).
 - `tools/validate-capsules`: capsule contract validator.
 - `tools/validate-manifests`: manifest contract validator.

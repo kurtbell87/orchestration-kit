@@ -18,6 +18,7 @@ while enforcing:
 - anti-bloat read budgets and hook enforcement
 - observable run traces
 - MCP access for Claude Code and Codex CLI
+- global run observability across cloned projects
 
 The orchestrator must wrap existing kit CLIs (`tools/kit`, `tools/pump`, `tools/query-log`) without changing their core behavior contracts.
 
@@ -54,6 +55,7 @@ master-kit/
     server.py
     schema.json
   tools/
+    dashboard
     kit
     pump
     query-log
@@ -100,11 +102,13 @@ Manifest includes:
 
 Requests are created at `interop/requests/<request_id>.json` and include:
 
-- `from_kit`, `to_kit`, `action`, `args`
+- `from_kit`, optional `from_phase`, `to_kit`, `action`, `args`
 - parent `run_id`
 - `must_read` pointers
 - `read_budget` (`max_files`, `max_total_bytes`, `allowed_paths`)
 - expected deliverables
+
+Routing policy: any `{from_kit, from_phase}` may call any `{to_kit, to_phase}`. No static adjacency restrictions are allowed.
 
 ### 4.5 Interop Response Contract
 
@@ -148,6 +152,16 @@ All tool outputs must remain pointer-oriented and bounded by `MASTER_KIT_MCP_MAX
 
 Wrappers must export required MCP env and execute exactly one request, with `tools/pump --once` fallback when direct CLI MCP invocation flags are unavailable.
 
+### 6.4 Dashboard Layer Requirements
+
+- `tools/dashboard` must support:
+  - global project registration (`master-kit` clone roots + owning project roots)
+  - indexed run/query views across all registered projects
+  - per-project filters
+  - run-thread exploration by `parent_run_id`
+  - cross-phase edge summaries derived from request events
+- Dashboard data must be derived from pointer artifacts (`runs/*/events.jsonl`, manifests, request/response files), not transcripts.
+
 ## 7) Testing and CI Requirements
 
 Required coverage includes:
@@ -155,6 +169,7 @@ Required coverage includes:
 - hook enforcement and re-entry behavior
 - capsule/manifest validators
 - MCP auth + bounded output + pointer-only tool behavior
+- cross-kit routing matrix + cycle coverage (`tdd -> research -> math -> tdd`)
 - end-to-end smoke flow (`tools/smoke-run`)
 
 CI must run unit tests, MCP integration tests, smoke run, and validators.

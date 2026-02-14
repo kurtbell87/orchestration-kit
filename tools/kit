@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import uuid
@@ -106,6 +107,24 @@ def int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def run_project_root() -> Path:
+    if PROJECT_ROOT is not None:
+        return PROJECT_ROOT.resolve()
+    return REPO_ROOT.resolve()
+
+
+def runtime_identity() -> str:
+    raw = os.getenv("MASTER_KIT_AGENT_RUNTIME", "").strip()
+    if raw:
+        return raw
+
+    if os.getenv("CLAUDE_CODE"):
+        return "claude"
+    if os.getenv("CODEX_ENV"):
+        return "codex"
+    return "direct"
 
 
 def rel_repo(path: Path) -> str:
@@ -311,6 +330,15 @@ def run_phase(argv: list[str]) -> int:
     config = KIT_CONFIG[args.kit]
     cwd: Path = PROJECT_ROOT if PROJECT_ROOT is not None else config["cwd"]
     script: str = config["script"]
+    project_root = run_project_root()
+    master_kit_root = REPO_ROOT.resolve()
+    run_context = {
+        "project_root": str(project_root),
+        "master_kit_root": str(master_kit_root),
+        "agent_runtime": runtime_identity(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+    }
 
     run_id = args.run_id or make_run_id()
     run_root = RUNS_DIR / run_id
@@ -330,6 +358,7 @@ def run_phase(argv: list[str]) -> int:
         parent_run_id=args.parent_run_id,
         kit=args.kit,
         phase=args.phase,
+        **run_context,
     )
     append_event(
         events_path,
@@ -338,6 +367,7 @@ def run_phase(argv: list[str]) -> int:
         kit=args.kit,
         phase=args.phase,
         command=[script, args.phase] + args.phase_args,
+        cwd=str(cwd.resolve()),
     )
 
     cmd = [script, args.phase] + args.phase_args
@@ -376,6 +406,7 @@ def run_phase(argv: list[str]) -> int:
         phase=args.phase,
         exit_code=exit_code,
         log_path=rel_repo(log_path),
+        **run_context,
     )
 
     tracked_files = expand_file_patterns(cwd, config["tracked_globs"])
@@ -427,6 +458,11 @@ def run_phase(argv: list[str]) -> int:
             "exit_code": exit_code,
             "command": cmd,
             "cwd": rel_repo(cwd),
+            "project_root": str(project_root),
+            "master_kit_root": str(master_kit_root),
+            "agent_runtime": run_context["agent_runtime"],
+            "host": run_context["host"],
+            "pid": run_context["pid"],
             "read_budget": {
                 "max_files": int_env("READ_BUDGET_MAX_FILES", 0),
                 "max_total_bytes": int_env("READ_BUDGET_MAX_TOTAL_BYTES", 0),
@@ -461,6 +497,7 @@ def run_phase(argv: list[str]) -> int:
         kit=args.kit,
         phase=args.phase,
         manifest_path=rel_repo(manifest_path),
+        **run_context,
     )
     append_event(
         events_path,
@@ -471,6 +508,7 @@ def run_phase(argv: list[str]) -> int:
         exit_code=exit_code,
         capsule_path=rel_repo(capsule_path),
         manifest_path=rel_repo(manifest_path),
+        **run_context,
     )
 
     output = {
@@ -506,6 +544,7 @@ def make_request(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="tools/kit request", add_help=True)
     parser.add_argument("--request-id", default=None)
     parser.add_argument("--from", dest="from_kit", required=True, choices=sorted(KIT_CONFIG.keys()))
+    parser.add_argument("--from-phase", dest="from_phase", default=None)
     parser.add_argument("--to", dest="to_kit", required=True, choices=sorted(KIT_CONFIG.keys()))
     parser.add_argument("--action", required=True)
     parser.add_argument("--run-id", required=True)
@@ -525,6 +564,7 @@ def make_request(argv: list[str]) -> int:
     payload = {
         "request_id": request_id,
         "from_kit": args.from_kit,
+        "from_phase": args.from_phase,
         "to_kit": args.to_kit,
         "action": args.action,
         "args": args.args,

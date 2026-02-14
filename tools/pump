@@ -99,6 +99,42 @@ def parse_action(payload: dict[str, Any]) -> tuple[str, str]:
     return to_kit, phase
 
 
+def infer_parent_phase(parent_run_id: str) -> tuple[str | None, str | None]:
+    events_path = RUNS_DIR / parent_run_id / "events.jsonl"
+    if events_path.is_file():
+        with events_path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("event") != "run_started":
+                    continue
+                kit = payload.get("kit")
+                phase = payload.get("phase")
+                if isinstance(kit, str) and isinstance(phase, str):
+                    return kit, phase
+
+    manifest_dir = RUNS_DIR / parent_run_id / "manifests"
+    if manifest_dir.is_dir():
+        manifests = sorted(p for p in manifest_dir.glob("*.json") if p.is_file())
+        if manifests:
+            try:
+                data = load_json(manifests[0])
+            except Exception:
+                return None, None
+            metadata = data.get("metadata", {})
+            if isinstance(metadata, dict):
+                kit = metadata.get("kit")
+                phase = metadata.get("phase")
+                if isinstance(kit, str) and isinstance(phase, str):
+                    return kit, phase
+    return None, None
+
+
 def read_child_result(stdout: str, stderr: str) -> dict[str, Any]:
     lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
     for line in reversed(lines):
@@ -146,6 +182,14 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
 
     request_id = str(payload["request_id"])
     parent_run_id = str(payload["run_id"])
+    to_kit, to_phase = parse_action(payload)
+    from_kit = str(payload["from_kit"])
+    from_phase_raw = payload.get("from_phase")
+    from_phase = str(from_phase_raw) if isinstance(from_phase_raw, str) and from_phase_raw.strip() else None
+    if from_phase is None:
+        parent_kit, parent_phase = infer_parent_phase(parent_run_id)
+        if parent_kit == from_kit:
+            from_phase = parent_phase
 
     parent_events = RUNS_DIR / parent_run_id / "events.jsonl"
     append_event(
@@ -153,12 +197,12 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         "request_enqueued",
         request_id=request_id,
         request_path=rel_repo(request_path),
-        from_kit=payload["from_kit"],
-        to_kit=payload["to_kit"],
+        from_kit=from_kit,
+        from_phase=from_phase,
+        to_kit=to_kit,
+        to_phase=to_phase,
         action=payload["action"],
     )
-
-    to_kit, phase = parse_action(payload)
 
     cmd = [
         str(REPO_ROOT / "tools" / "kit"),
@@ -166,7 +210,7 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         "--parent-run-id",
         parent_run_id,
         to_kit,
-        phase,
+        to_phase,
         *[str(a) for a in payload.get("args", [])],
     ]
 
@@ -238,6 +282,11 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         response_path=rel_repo(response_path),
         status=status,
         child_run_id=child_run_id,
+        from_kit=from_kit,
+        from_phase=from_phase,
+        to_kit=to_kit,
+        to_phase=to_phase,
+        action=payload["action"],
         pointers={
             "capsule_path": capsule_path,
             "manifest_path": manifest_path,

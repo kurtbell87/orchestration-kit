@@ -25,6 +25,10 @@
       "type": "string",
       "enum": ["tdd", "research", "math"]
     },
+    "from_phase": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
     "to_kit": {
       "type": "string",
       "enum": ["tdd", "research", "math"]
