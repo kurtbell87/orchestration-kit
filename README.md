@@ -75,7 +75,7 @@ master-kit/
 
 ## Quick Start
 
-Greenfield example:
+Greenfield example — clone, install, and observe runs in real time:
 
 ```bash
 git clone https://github.com/kurtbell87/master-kit.git my-project
@@ -96,13 +96,28 @@ source .master-kit.env
 source .master-kit.env
 ```
 
-3. Start MCP server:
+3. Start the dashboard (auto-registers the current project):
+
+```bash
+tools/dashboard serve --port 7340
+```
+
+4. In a second terminal, kick off a run:
+
+```bash
+source .master-kit.env
+tools/kit --json tdd red docs/my-feature.md
+```
+
+5. Open `http://127.0.0.1:7340` — the DAG updates automatically every 3 seconds while runs are active. Running nodes show elapsed time with a pulsing status indicator. Once all runs finish, polling stops.
+
+6. (Optional) Start MCP server for IDE integration:
 
 ```bash
 tools/mcp-serve
 ```
 
-4. Verify orchestrator + MCP path:
+7. Verify orchestrator + MCP path:
 
 ```bash
 tools/kit --json research status
@@ -188,6 +203,8 @@ tools/dashboard serve --project-id <project_id>
 Open `http://127.0.0.1:7340` and filter by project to inspect active agents, run threads, and cross-phase edges.
 In Thread Detail, click run artifact buttons to open capsules/manifests/logs/events; Markdown artifacts render directly in the UI.
 
+The DAG auto-refreshes every 3 seconds while any run has `running` status. Running nodes display elapsed time and a pulsing status dot. Once all runs complete, auto-polling stops to avoid unnecessary traffic.
+
 Always-on mode (single watchdog service):
 
 ```bash
@@ -225,6 +242,7 @@ Dashboard API endpoints:
 
 - `GET /api/projects`
 - `GET /api/summary`
+- `GET /api/dag`
 - `GET /api/graph`
 - `GET /api/active`
 - `GET /api/runs`
