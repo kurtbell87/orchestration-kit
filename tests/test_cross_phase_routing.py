@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import unittest
 import uuid
@@ -31,7 +32,9 @@ class CrossPhaseRoutingTests(unittest.TestCase):
                 rsp.unlink()
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, check=False)
+        env = os.environ.copy()
+        env["MASTER_KIT_DASHBOARD_AUTOSTART"] = "0"
+        return subprocess.run(cmd, cwd=str(ROOT), env=env, text=True, capture_output=True, check=False)
 
     def _json_tail(self, proc: subprocess.CompletedProcess[str]) -> dict[str, object]:
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

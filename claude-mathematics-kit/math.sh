@@ -223,6 +223,27 @@ unlock_lean_files() {
   echo -e "   ${BLUE}$count file(s) unlocked${NC}"
 }
 
+ensure_dashboard_watchdog() {
+  case "${MASTER_KIT_DASHBOARD_AUTOSTART:-1}" in
+    0|false|FALSE|no|NO|off|OFF) return 0 ;;
+  esac
+  local mk_root="${MASTER_KIT_ROOT:-}"
+  if [[ -z "$mk_root" ]]; then
+    return 0
+  fi
+  local dashboard="$mk_root/tools/dashboard"
+  if [[ ! -x "$dashboard" ]]; then
+    return 0
+  fi
+
+  local project_root="${PROJECT_ROOT:-$_project_root}"
+  local label
+  label="$(basename "$project_root")"
+
+  "$dashboard" register --master-kit-root "$mk_root" --project-root "$project_root" --label "$label" >/dev/null 2>&1 || true
+  "$dashboard" ensure-service --wait-seconds "${MASTER_KIT_DASHBOARD_ENSURE_WAIT_SECONDS:-1}" >/dev/null 2>&1 || true
+}
+
 unlock_all() {
   # Restore write permissions on everything
   while IFS= read -r f; do
@@ -1207,6 +1228,8 @@ run_program() {
 # ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
+
+ensure_dashboard_watchdog
 
 case "${1:-help}" in
   survey)     shift; run_survey "$@" ;;

@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""High-trust validation harness for master-kit + dashboard.
+
+This script creates two toy greenfield projects, runs a non-trivial orchestration
+scenario across all three kits, verifies accountability artifacts, and validates
+dashboard indexing/graph APIs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CREATE_TOY = REPO_ROOT / "examples" / "create-toy-greenfield.sh"
+DASHBOARD = REPO_ROOT / "tools" / "dashboard"
+
+
+class ValidationError(RuntimeError):
+    pass
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def short_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
+
+
+def run_cmd(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+    if check and proc.returncode != 0:
+        tail_stdout = proc.stdout[-600:]
+        tail_stderr = proc.stderr[-600:]
+        raise ValidationError(
+            f"command failed ({proc.returncode}): {' '.join(cmd)}\n"
+            f"stdout_tail:\n{tail_stdout}\n"
+            f"stderr_tail:\n{tail_stderr}"
+        )
+    return proc
+
+
+def parse_last_json(stdout: str) -> dict[str, Any]:
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        try:
+            payload = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValidationError(f"missing JSON payload in output:\n{stdout[-800:]}")
+
+
+def run_json(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    proc = run_cmd(cmd, cwd=cwd, env=env, check=True, timeout=timeout)
+    return parse_last_json(proc.stdout)
+
+
+def load_project_env(project_root: Path) -> dict[str, str]:
+    probe = run_cmd(
+        ["bash", "-lc", "source .master-kit.env >/dev/null 2>&1; env -0"],
+        cwd=project_root,
+        env=os.environ.copy(),
+    )
+    merged = os.environ.copy()
+    for part in probe.stdout.split("\x00"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        merged[key] = value
+    return merged
+
+
+def ensure_clean_target(path: Path, *, reset: bool) -> None:
+    if not path.exists():
+        return
+    if not reset:
+        raise ValidationError(f"target already exists: {path} (pass --reset to remove it)")
+    if len(path.resolve().parts) < 3:
+        raise ValidationError(f"refusing to remove short path: {path}")
+    shutil.rmtree(path)
+
+
+def create_toy_project(target: Path) -> None:
+    run_cmd([str(CREATE_TOY), str(target)], cwd=REPO_ROOT)
+
+
+def check_prereqs() -> dict[str, str]:
+    found: dict[str, str] = {}
+    for binary in ("bash", "python3", "claude", "codex", "lake"):
+        path = shutil.which(binary)
+        if path is None:
+            raise ValidationError(f"required binary not found: {binary}")
+        found[binary] = path
+    return found
+
+
+def kit_tool(project_root: Path) -> Path:
+    return project_root / "master-kit" / "tools" / "kit"
+
+
+def pump_tool(project_root: Path) -> Path:
+    return project_root / "master-kit" / "tools" / "pump"
+
+
+def validate_capsules_tool(project_root: Path) -> Path:
+    return project_root / "master-kit" / "tools" / "validate-capsules"
+
+
+def validate_manifests_tool(project_root: Path) -> Path:
+    return project_root / "master-kit" / "tools" / "validate-manifests"
+
+
+def hook_path(project_root: Path) -> Path:
+    return project_root / "master-kit" / ".claude" / "hooks" / "pre-tool-use.sh"
+
+
+def new_request_id(label: str) -> str:
+    return f"rq-sci-{label}-{short_id()}"
+
+
+def create_request(
+    *,
+    project_root: Path,
+    env: dict[str, str],
+    request_id: str,
+    from_kit: str,
+    from_phase: str | None,
+    to_kit: str,
+    action: str,
+    run_id: str,
+    args: list[str],
+    max_files: int = 8,
+    max_total_bytes: int = 300_000,
+) -> dict[str, Any]:
+    cmd = [
+        str(kit_tool(project_root)),
+        "request",
+        "--json",
+        "--request-id",
+        request_id,
+        "--from",
+        from_kit,
+        "--to",
+        to_kit,
+        "--action",
+        action,
+        "--run-id",
+        run_id,
+        "--max-files",
+        str(max_files),
+        "--max-total-bytes",
+        str(max_total_bytes),
+        "--must-read",
+        f"runs/{run_id}/capsules/{from_kit}_{from_phase or 'status'}.md",
+        "--must-read",
+        f"runs/{run_id}/manifests/{from_kit}_{from_phase or 'status'}.json",
+        "--allowed-path",
+        "runs/*/capsules/*.md",
+        "--allowed-path",
+        "runs/*/manifests/*.json",
+        "--deliverable",
+        "runs/*/capsules/*.md",
+        "--deliverable",
+        "runs/*/manifests/*.json",
+    ]
+    if from_phase:
+        cmd.extend(["--from-phase", from_phase])
+    for arg in args:
+        cmd.extend(["--arg", arg])
+    return run_json(cmd, cwd=project_root, env=env)
+
+
+def pump_request(*, project_root: Path, env: dict[str, str], request_id: str) -> dict[str, Any]:
+    return run_json(
+        [str(pump_tool(project_root)), "--once", "--request", request_id, "--json"],
+        cwd=project_root,
+        env=env,
+    )
+
+
+def verify_run_artifacts(project_root: Path, run_id: str) -> dict[str, Any]:
+    run_root = project_root / "master-kit" / "runs" / run_id
+    if not run_root.is_dir():
+        raise ValidationError(f"missing run root: {run_root}")
+    capsules = sorted((run_root / "capsules").glob("*.md"))
+    manifests = sorted((run_root / "manifests").glob("*.json"))
+    logs = sorted((run_root / "logs").glob("*.log"))
+    events = run_root / "events.jsonl"
+    if not capsules or not manifests or not logs or not events.is_file():
+        raise ValidationError(f"incomplete run pointers for {run_id}")
+    return {
+        "run_id": run_id,
+        "run_root": str(run_root),
+        "capsule_count": len(capsules),
+        "manifest_count": len(manifests),
+        "log_count": len(logs),
+        "events_path": str(events),
+    }
+
+
+def run_validators(project_root: Path, env: dict[str, str], run_ids: list[str]) -> dict[str, Any]:
+    roots = [f"runs/{rid}" for rid in sorted(set(run_ids))]
+    run_cmd(
+        [str(validate_capsules_tool(project_root)), *roots],
+        cwd=project_root / "master-kit",
+        env=env,
+    )
+    run_cmd(
+        [str(validate_manifests_tool(project_root)), "--check-files", *roots],
+        cwd=project_root / "master-kit",
+        env=env,
+    )
+    return {"validated_runs": roots}
+
+
+def guardrail_block_probe(project_root: Path, env: dict[str, str]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        big = tmp / "big.log"
+        big.write_bytes(b"x" * 1024)
+        probe_env = env.copy()
+        probe_env.update(
+            {
+                "CLAUDE_TOOL_NAME": "Read",
+                "CLAUDE_TOOL_INPUT": json.dumps({"file_path": str(big)}),
+                "MAX_READ_BYTES": "100",
+                "RUN_ID": f"probe-{short_id()}",
+                "READ_BUDGET_STATE_DIR": str(tmp),
+            }
+        )
+        proc = run_cmd([str(hook_path(project_root))], cwd=project_root / "master-kit", env=probe_env, check=False)
+        blocked = proc.returncode != 0 and "BLOCKED: Read of large file" in proc.stderr
+        return {
+            "blocked": blocked,
+            "returncode": proc.returncode,
+            "stderr_tail": proc.stderr[-400:],
+        }
+
+
+def http_get_json(url: str) -> dict[str, Any]:
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        body = resp.read().decode("utf-8")
+    payload = json.loads(body)
+    if not isinstance(payload, dict):
+        raise ValidationError(f"non-object API payload from {url}")
+    return payload
+
+
+def run_dashboard_checks(
+    *,
+    project_a: Path,
+    project_b: Path,
+    report: dict[str, Any],
+    dashboard_home: Path,
+    dashboard_port: int,
+) -> dict[str, Any]:
+    env_dash = os.environ.copy()
+    env_dash["MASTER_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+
+    reg_a = run_json(
+        [
+            str(DASHBOARD),
+            "register",
+            "--master-kit-root",
+            str(project_a / "master-kit"),
+            "--project-root",
+            str(project_a),
+            "--label",
+            "science-a",
+        ],
+        cwd=REPO_ROOT,
+        env=env_dash,
+    )
+    reg_b = run_json(
+        [
+            str(DASHBOARD),
+            "register",
+            "--master-kit-root",
+            str(project_b / "master-kit"),
+            "--project-root",
+            str(project_b),
+            "--label",
+            "science-b",
+        ],
+        cwd=REPO_ROOT,
+        env=env_dash,
+    )
+    projects = run_json([str(DASHBOARD), "projects"], cwd=REPO_ROOT, env=env_dash)
+    idx_all = run_json([str(DASHBOARD), "index"], cwd=REPO_ROOT, env=env_dash)
+    idx_a = run_json([str(DASHBOARD), "index", "--project-id", str(reg_a["project_id"])], cwd=REPO_ROOT, env=env_dash)
+
+    serve_cmd = [
+        str(DASHBOARD),
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(dashboard_port),
+    ]
+    proc = subprocess.Popen(
+        serve_cmd,
+        cwd=str(REPO_ROOT),
+        env=env_dash,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    ready = False
+    start = dt.datetime.now().timestamp()
+    ready_line = ""
+    try:
+        while (dt.datetime.now().timestamp() - start) < 30:
+            line = ""
+            if proc.stdout is not None:
+                line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            if "dashboard ready url=" in line:
+                ready = True
+                ready_line = line.strip()
+                break
+        if not ready:
+            tail = ""
+            if proc.stdout is not None:
+                tail = proc.stdout.read()[-600:]
+            raise ValidationError(f"dashboard failed to start. output_tail={tail}")
+
+        base = f"http://127.0.0.1:{dashboard_port}"
+        api_projects = http_get_json(f"{base}/api/projects")
+        api_summary_all = http_get_json(f"{base}/api/summary")
+        api_graph_a = http_get_json(f"{base}/api/graph?project_id={urllib.parse.quote(str(reg_a['project_id']))}")
+        api_runs_a = http_get_json(
+            f"{base}/api/runs?project_id={urllib.parse.quote(str(reg_a['project_id']))}&limit=50"
+        )
+        first_run = None
+        runs = api_runs_a.get("runs")
+        if isinstance(runs, list) and runs:
+            first = runs[0]
+            if isinstance(first, dict) and isinstance(first.get("run_id"), str):
+                first_run = first["run_id"]
+        if first_run is None:
+            raise ValidationError("dashboard /api/runs returned no rows for project A")
+        api_run = http_get_json(
+            f"{base}/api/run?project_id={urllib.parse.quote(str(reg_a['project_id']))}"
+            f"&run_id={urllib.parse.quote(first_run)}"
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    out = {
+        "register_a": reg_a,
+        "register_b": reg_b,
+        "projects": projects,
+        "index_all": idx_all,
+        "index_a": idx_a,
+        "serve_ready_line": ready_line,
+        "api_projects_count": len(api_projects.get("projects", [])) if isinstance(api_projects.get("projects"), list) else 0,
+        "api_summary_keys": sorted((api_summary_all.get("summary") or {}).keys())
+        if isinstance(api_summary_all.get("summary"), dict)
+        else [],
+        "api_graph_edges": len(api_graph_a.get("edges", [])) if isinstance(api_graph_a.get("edges"), list) else 0,
+        "api_runs_count": len(api_runs_a.get("runs", [])) if isinstance(api_runs_a.get("runs"), list) else 0,
+        "api_run_thread_count": len(api_run.get("thread_runs", [])) if isinstance(api_run.get("thread_runs"), list) else 0,
+    }
+    report["checks"].append(
+        {
+            "name": "dashboard_multi_project_index",
+            "ok": int(out["index_all"].get("projects_indexed", 0)) == 2,
+            "details": out["index_all"],
+        }
+    )
+    report["checks"].append(
+        {
+            "name": "dashboard_graph_visible",
+            "ok": out["api_graph_edges"] >= 1,
+            "details": {"api_graph_edges": out["api_graph_edges"]},
+        }
+    )
+    return out
+
+
+def run_orchestration(
+    *,
+    profile: str,
+    project_root: Path,
+    env: dict[str, str],
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    project_env = env.copy()
+    project_env["MASTER_KIT_AGENT_RUNTIME"] = f"science-validation-{profile}"
+
+    if profile == "live":
+        parent_cmd = [str(kit_tool(project_root)), "--json", "tdd", "red", "docs/fib-library.md"]
+        branch1_action = ("research", "research.survey", ["Where does Binet diverge for float64 in this codebase?"])
+        branch2_action = ("math", "math.survey", ["specs/fib-matrix-identity.md"])
+    else:
+        parent_cmd = [str(kit_tool(project_root)), "--json", "tdd", "watch", "../README.md", "--resolve"]
+        branch1_action = ("research", "research.status", [])
+        branch2_action = ("math", "math.status", [])
+
+    parent = run_json(parent_cmd, cwd=project_root, env=project_env)
+    parent_run = str(parent["run_id"])
+    parent_phase = str(parent["phase"])
+    report["checks"].append(
+        {
+            "name": "parent_run_ok",
+            "ok": parent.get("status") == "ok",
+            "details": {"run_id": parent_run, "phase": parent_phase, "status": parent.get("status")},
+        }
+    )
+
+    rq1 = new_request_id("branch-r")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq1,
+        from_kit="tdd",
+        from_phase=parent_phase,
+        to_kit=branch1_action[0],
+        action=branch1_action[1],
+        run_id=parent_run,
+        args=branch1_action[2],
+    )
+    hop1 = pump_request(project_root=project_root, env=project_env, request_id=rq1)
+
+    rq2 = new_request_id("branch-m")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq2,
+        from_kit="tdd",
+        from_phase=parent_phase,
+        to_kit=branch2_action[0],
+        action=branch2_action[1],
+        run_id=parent_run,
+        args=branch2_action[2],
+    )
+    hop2 = pump_request(project_root=project_root, env=project_env, request_id=rq2)
+
+    report["checks"].append(
+        {"name": "branch_request_1_ok", "ok": hop1.get("status") == "ok", "details": hop1}
+    )
+    report["checks"].append(
+        {"name": "branch_request_2_ok", "ok": hop2.get("status") == "ok", "details": hop2}
+    )
+
+    hop1_child = str(hop1.get("child_run_id") or "")
+    rq3 = new_request_id("cycle-m")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq3,
+        from_kit="research",
+        from_phase="survey" if profile == "live" else "status",
+        to_kit="math",
+        action="math.status",
+        run_id=hop1_child,
+        args=[],
+    )
+    hop3 = pump_request(project_root=project_root, env=project_env, request_id=rq3)
+    report["checks"].append({"name": "cycle_request_1_ok", "ok": hop3.get("status") == "ok", "details": hop3})
+
+    hop3_child = str(hop3.get("child_run_id") or "")
+    rq4 = new_request_id("cycle-t")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq4,
+        from_kit="math",
+        from_phase="status",
+        to_kit="tdd",
+        action="tdd.watch",
+        run_id=hop3_child,
+        args=["../README.md", "--resolve"],
+    )
+    hop4 = pump_request(project_root=project_root, env=project_env, request_id=rq4)
+    report["checks"].append({"name": "cycle_request_2_ok", "ok": hop4.get("status") == "ok", "details": hop4})
+
+    rq_block = new_request_id("blocked")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq_block,
+        from_kit="tdd",
+        from_phase=parent_phase,
+        to_kit="research",
+        action="research.survey" if profile == "live" else "research.status",
+        run_id=parent_run,
+        args=["Intentional guardrail probe"] if profile == "live" else [],
+        max_files=1,
+        max_total_bytes=1,
+    )
+    blocked_env = project_env.copy()
+    blocked_env["MAX_READ_BYTES"] = "64"
+    blocked = pump_request(project_root=project_root, env=blocked_env, request_id=rq_block)
+    report["checks"].append(
+        {
+            "name": "blocked_request_status",
+            "ok": blocked.get("status") == "blocked" if profile == "live" else True,
+            "details": blocked,
+        }
+    )
+
+    rq_fail = new_request_id("failed")
+    create_request(
+        project_root=project_root,
+        env=project_env,
+        request_id=rq_fail,
+        from_kit="tdd",
+        from_phase=parent_phase,
+        to_kit="math",
+        action="math.prove",
+        run_id=parent_run,
+        args=[],
+    )
+    failed = pump_request(project_root=project_root, env=project_env, request_id=rq_fail)
+    report["checks"].append(
+        {"name": "failed_request_status", "ok": failed.get("status") == "failed", "details": failed}
+    )
+
+    run_ids: list[str] = [parent_run]
+    for payload in (hop1, hop2, hop3, hop4, blocked, failed):
+        child = payload.get("child_run_id")
+        if isinstance(child, str) and child:
+            run_ids.append(child)
+
+    artifacts = [verify_run_artifacts(project_root, rid) for rid in sorted(set(run_ids))]
+    validators = run_validators(project_root, project_env, run_ids)
+    block_probe = guardrail_block_probe(project_root, project_env)
+    report["checks"].append(
+        {"name": "guardrail_probe_blocked", "ok": block_probe["blocked"], "details": block_probe}
+    )
+
+    return {
+        "parent": parent,
+        "hop1": hop1,
+        "hop2": hop2,
+        "hop3": hop3,
+        "hop4": hop4,
+        "blocked": blocked,
+        "failed": failed,
+        "artifacts": artifacts,
+        "validators": validators,
+        "guardrail_probe": block_probe,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tools/science-validation", add_help=True)
+    parser.add_argument(
+        "--profile",
+        choices=("live", "deterministic"),
+        default="live",
+        help="live = full live sub-agent phases; deterministic = status/watch-only path",
+    )
+    parser.add_argument("--agent-bin", choices=("claude", "codex"), default="claude")
+    parser.add_argument("--project-a", default="/tmp/master-kit-science-a")
+    parser.add_argument("--project-b", default="/tmp/master-kit-science-b")
+    parser.add_argument("--dashboard-home", default=None)
+    parser.add_argument("--dashboard-port", type=int, default=0)
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--reset", action="store_true")
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+
+    project_a = Path(args.project_a).expanduser().resolve()
+    project_b = Path(args.project_b).expanduser().resolve()
+    dashboard_home = (
+        Path(args.dashboard_home).expanduser().resolve()
+        if args.dashboard_home
+        else Path(f"/tmp/master-kit-dashboard-science-{short_id()}").resolve()
+    )
+    dashboard_port = args.dashboard_port if args.dashboard_port > 0 else free_port()
+    output_path = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else Path(f"/tmp/master-kit-science-validation-{dt.datetime.now().strftime('%Y%m%dT%H%M%S')}.json").resolve()
+    )
+
+    report: dict[str, Any] = {
+        "started_at": now_iso(),
+        "profile": args.profile,
+        "checks": [],
+        "paths": {
+            "repo_root": str(REPO_ROOT),
+            "project_a": str(project_a),
+            "project_b": str(project_b),
+            "dashboard_home": str(dashboard_home),
+            "output": str(output_path),
+        },
+    }
+
+    try:
+        report["prereqs"] = check_prereqs()
+
+        ensure_clean_target(project_a, reset=args.reset)
+        ensure_clean_target(project_b, reset=args.reset)
+        create_toy_project(project_a)
+        create_toy_project(project_b)
+
+        env_a = load_project_env(project_a)
+        env_b = load_project_env(project_b)
+        env_a["TDD_AGENT_BIN"] = args.agent_bin
+        env_b["TDD_AGENT_BIN"] = args.agent_bin
+
+        report["orchestration"] = run_orchestration(profile=args.profile, project_root=project_a, env=env_a, report=report)
+        report["dashboard"] = run_dashboard_checks(
+            project_a=project_a,
+            project_b=project_b,
+            report=report,
+            dashboard_home=dashboard_home,
+            dashboard_port=dashboard_port,
+        )
+        report["finished_at"] = now_iso()
+        report["status"] = "ok" if all(bool(c.get("ok")) for c in report["checks"]) else "failed"
+    except Exception as exc:
+        report["finished_at"] = now_iso()
+        report["status"] = "failed"
+        report["error"] = str(exc)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    print(f"science-validation report: {output_path}")
+    print(f"status={report.get('status')}")
+    failed_checks = [c for c in report.get("checks", []) if not c.get("ok")]
+    print(f"checks_total={len(report.get('checks', []))}")
+    print(f"checks_failed={len(failed_checks)}")
+    if failed_checks:
+        print("failed_checks:")
+        for row in failed_checks:
+            print(f"- {row.get('name')}")
+
+    return 0 if report.get("status") == "ok" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

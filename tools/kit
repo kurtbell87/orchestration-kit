@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import glob
+import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = Path(os.environ["PROJECT_ROOT"]) if os.environ.get("PROJECT_ROOT") else None
 RUNS_DIR = REPO_ROOT / "runs"
 INTEROP_REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
+DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
 
 KIT_CONFIG: dict[str, dict[str, Any]] = {
     "tdd": {
@@ -109,6 +111,105 @@ def int_env(name: str, default: int) -> int:
         return default
 
 
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def parse_project_id(stdout: str) -> str | None:
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        project_id = payload.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            return project_id
+    return None
+
+
+def dashboard_manage_project(project_root: Path) -> str | None:
+    if not env_enabled("MASTER_KIT_DASHBOARD_AUTOSTART", default=True):
+        return None
+    if not DASHBOARD_TOOL.is_file():
+        return None
+
+    label = os.getenv("MASTER_KIT_DASHBOARD_LABEL", project_root.name)
+    register = subprocess.run(
+        [
+            str(DASHBOARD_TOOL),
+            "register",
+            "--master-kit-root",
+            str(REPO_ROOT),
+            "--project-root",
+            str(project_root),
+            "--label",
+            label,
+        ],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    project_id = parse_project_id(register.stdout)
+    if register.returncode != 0:
+        print(
+            f"[tools/kit] dashboard register failed (continuing): {register.stderr.strip() or register.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return project_id
+
+    ensure = subprocess.run(
+        [
+            str(DASHBOARD_TOOL),
+            "ensure-service",
+            "--wait-seconds",
+            os.getenv("MASTER_KIT_DASHBOARD_ENSURE_WAIT_SECONDS", "1"),
+        ],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if ensure.returncode != 0:
+        print(
+            f"[tools/kit] dashboard ensure-service failed (continuing): {ensure.stderr.strip() or ensure.stdout.strip()}",
+            file=sys.stderr,
+        )
+
+    return project_id
+
+
+def dashboard_index_project(project_id: str | None) -> None:
+    if not env_enabled("MASTER_KIT_DASHBOARD_AUTO_INDEX", default=True):
+        return
+    if not DASHBOARD_TOOL.is_file():
+        return
+    if not isinstance(project_id, str) or not project_id:
+        return
+
+    proc = subprocess.run(
+        [str(DASHBOARD_TOOL), "index", "--project-id", project_id],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        print(
+            f"[tools/kit] dashboard index failed (continuing): {proc.stderr.strip() or proc.stdout.strip()}",
+            file=sys.stderr,
+        )
+
+
 def run_project_root() -> Path:
     if PROJECT_ROOT is not None:
         return PROJECT_ROOT.resolve()
@@ -148,8 +249,13 @@ def append_event(events_path: Path, event: str, **payload: Any) -> None:
     record = {"ts": now_iso(), "event": event}
     record.update(payload)
     with events_path.open("a", encoding="utf-8") as fh:
-        json.dump(record, fh, sort_keys=True)
-        fh.write("\n")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            json.dump(record, fh, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def expand_file_patterns(base_dir: Path, patterns: list[str], limit: int = 400) -> list[Path]:
@@ -270,10 +376,18 @@ def fallback_capsule(
                 lines.extend(f"  {ln}" for ln in tail)
         except OSError:
             pass
+    if exit_code == 0:
+        next_action = "Next action requested (exactly one): proceed to next phase."
+        blocked = "If blocked: n/a"
+    else:
+        next_action = "Next action requested (exactly one): read this capsule and decide whether to retry or stop."
+        blocked = "If blocked: check error output above; fix the root cause before retrying."
     lines.extend([
+        next_action,
         "Evidence pointers:",
         f"- log: {rel_repo(log_path)}",
         f"- manifest: {rel_repo(manifest_path)}",
+        blocked,
         f"Run: {run_id}",
     ])
     return lines
@@ -312,6 +426,7 @@ def run_phase(argv: list[str]) -> int:
     parser.add_argument("phase")
     parser.add_argument("phase_args", nargs=argparse.REMAINDER)
     parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--reasoning", default=None, help="1-3 sentence justification for this dispatch")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--parent-run-id", default=os.getenv("RUN_ID"))
     parser.add_argument(
@@ -331,6 +446,7 @@ def run_phase(argv: list[str]) -> int:
     cwd: Path = PROJECT_ROOT if PROJECT_ROOT is not None else config["cwd"]
     script: str = config["script"]
     project_root = run_project_root()
+    dashboard_project_id = dashboard_manage_project(project_root)
     master_kit_root = REPO_ROOT.resolve()
     run_context = {
         "project_root": str(project_root),
@@ -358,6 +474,7 @@ def run_phase(argv: list[str]) -> int:
         parent_run_id=args.parent_run_id,
         kit=args.kit,
         phase=args.phase,
+        reasoning=args.reasoning,
         **run_context,
     )
     append_event(
@@ -463,6 +580,7 @@ def run_phase(argv: list[str]) -> int:
             "agent_runtime": run_context["agent_runtime"],
             "host": run_context["host"],
             "pid": run_context["pid"],
+            "reasoning": args.reasoning,
             "read_budget": {
                 "max_files": int_env("READ_BUDGET_MAX_FILES", 0),
                 "max_total_bytes": int_env("READ_BUDGET_MAX_TOTAL_BYTES", 0),
@@ -517,6 +635,7 @@ def run_phase(argv: list[str]) -> int:
         "exit_code": exit_code,
         "kit": args.kit,
         "phase": args.phase,
+        "reasoning": args.reasoning,
         "paths": {
             "run_root": rel_repo(run_root),
             "events": rel_repo(events_path),
@@ -537,6 +656,8 @@ def run_phase(argv: list[str]) -> int:
         print(f"manifest={output['paths']['manifest']}")
         print(f"log={output['paths']['log']}")
 
+    dashboard_index_project(dashboard_project_id)
+
     return 0 if exit_code == 0 else exit_code
 
 
@@ -556,9 +677,12 @@ def make_request(argv: list[str]) -> int:
     parser.add_argument("--max-files", type=int, default=8)
     parser.add_argument("--max-total-bytes", type=int, default=300_000)
     parser.add_argument("--priority", default="normal")
+    parser.add_argument("--reasoning", default=None, help="1-3 sentence justification for this request")
     parser.add_argument("--json", action="store_true", dest="json_out")
 
     args = parser.parse_args(argv)
+
+    dashboard_project_id = dashboard_manage_project(run_project_root())
 
     request_id = args.request_id or f"rq-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     payload = {
@@ -578,6 +702,7 @@ def make_request(argv: list[str]) -> int:
         },
         "deliverables_expected": args.deliverables,
         "priority": args.priority,
+        "reasoning": args.reasoning,
     }
 
     INTEROP_REQUESTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -587,12 +712,15 @@ def make_request(argv: list[str]) -> int:
     output = {
         "request_id": request_id,
         "path": rel_repo(request_path),
+        "reasoning": args.reasoning,
     }
     if args.json_out:
         print(json.dumps(output, sort_keys=True))
     else:
         print(f"request_id={request_id}")
         print(f"path={rel_repo(request_path)}")
+
+    dashboard_index_project(dashboard_project_id)
 
     return 0
 

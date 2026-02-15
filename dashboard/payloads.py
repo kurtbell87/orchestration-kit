@@ -1,0 +1,486 @@
+"""All API payload builders."""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from .config import db_path
+from .schema import ensure_schema
+
+
+def load_dashboard_rows(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(str(db_path()))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def load_one_row(query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+    conn = sqlite3.connect(str(db_path()))
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    row = conn.execute(query, params).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def summary_payload(project_id: str | None) -> dict[str, Any]:
+    params: list[Any] = []
+    project_clause = ""
+    if project_id:
+        project_clause = "WHERE project_id = ?"
+        params.append(project_id)
+
+    runs = load_one_row(
+        f"""
+        SELECT
+          COUNT(*) AS total_runs,
+          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_runs,
+          SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_runs,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_runs
+        FROM runs
+        {project_clause}
+        """,
+        tuple(params),
+    ) or {}
+
+    reqs = load_one_row(
+        f"""
+        SELECT
+          COUNT(*) AS total_requests,
+          SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_requests,
+          SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_requests,
+          SUM(CASE WHEN status = 'failed' OR status IS NULL THEN 1 ELSE 0 END) AS failed_requests
+        FROM requests
+        {project_clause}
+        """,
+        tuple(params),
+    ) or {}
+
+    active_by_phase = load_dashboard_rows(
+        f"""
+        SELECT
+          COALESCE(kit, 'unknown') AS kit,
+          COALESCE(phase, 'unknown') AS phase,
+          COUNT(*) AS count
+        FROM runs
+        {project_clause if project_clause else ''}
+        {('AND' if project_clause else 'WHERE')} status = 'running'
+        GROUP BY COALESCE(kit, 'unknown'), COALESCE(phase, 'unknown')
+        ORDER BY count DESC, kit ASC, phase ASC
+        """,
+        tuple(params),
+    )
+
+    return {
+        "runs": runs,
+        "requests": reqs,
+        "active_by_phase": active_by_phase,
+    }
+
+
+def graph_payload(project_id: str | None) -> dict[str, Any]:
+    where = ""
+    params: tuple[Any, ...] = ()
+    if project_id:
+        where = "WHERE project_id = ?"
+        params = (project_id,)
+
+    edges = load_dashboard_rows(
+        f"""
+        SELECT
+          COALESCE(from_kit, 'unknown') AS from_kit,
+          COALESCE(from_phase, '?') AS from_phase,
+          COALESCE(to_kit, 'unknown') AS to_kit,
+          COALESCE(to_phase, '?') AS to_phase,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok,
+          SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+          SUM(CASE WHEN status = 'failed' OR status IS NULL THEN 1 ELSE 0 END) AS failed
+        FROM requests
+        {where}
+        GROUP BY
+          COALESCE(from_kit, 'unknown'),
+          COALESCE(from_phase, '?'),
+          COALESCE(to_kit, 'unknown'),
+          COALESCE(to_phase, '?')
+        ORDER BY total DESC, from_kit ASC, to_kit ASC
+        """,
+        params,
+    )
+
+    return {"edges": edges}
+
+
+def parse_int(raw: str | None, default: int, minimum: int, maximum: int) -> int:
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
+    project_id = query.get("project_id")
+    status = query.get("status")
+    kit = query.get("kit")
+    phase = query.get("phase")
+    limit = parse_int(query.get("limit"), 200, 1, 2000)
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if project_id:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if kit:
+        clauses.append("kit = ?")
+        params.append(kit)
+    if phase:
+        clauses.append("phase = ?")
+        params.append(phase)
+
+    where = ""
+    if clauses:
+        where = "WHERE " + " AND ".join(clauses)
+
+    rows = load_dashboard_rows(
+        f"""
+        SELECT
+          project_id,
+          run_id,
+          parent_run_id,
+          kit,
+          phase,
+          status,
+          started_at,
+          finished_at,
+          exit_code,
+          cwd,
+          project_root,
+          master_kit_root,
+          agent_runtime,
+          host,
+          pid,
+          capsule_path,
+          manifest_path,
+          log_path,
+          events_path,
+          reasoning
+        FROM runs
+        {where}
+        ORDER BY COALESCE(started_at, '') DESC, run_id DESC
+        LIMIT ?
+        """,
+        tuple([*params, limit]),
+    )
+
+    return {"runs": rows, "limit": limit}
+
+
+def _parent_map(rows: list[dict[str, Any]]) -> dict[str, str | None]:
+    return {str(row["run_id"]): row.get("parent_run_id") for row in rows if row.get("run_id") is not None}
+
+
+def _root_for_run(run_id: str, parents: dict[str, str | None]) -> str:
+    current = run_id
+    seen: set[str] = set()
+    while True:
+        if current in seen:
+            return run_id
+        seen.add(current)
+        parent = parents.get(current)
+        if not isinstance(parent, str) or parent not in parents:
+            return current
+        current = parent
+
+
+def run_detail_payload(project_id: str, run_id: str) -> dict[str, Any]:
+    run = load_one_row(
+        """
+        SELECT *
+        FROM runs
+        WHERE project_id = ? AND run_id = ?
+        """,
+        (project_id, run_id),
+    )
+    if run is None:
+        raise KeyError("run not found")
+
+    all_runs = load_dashboard_rows(
+        """
+        SELECT *
+        FROM runs
+        WHERE project_id = ?
+        """,
+        (project_id,),
+    )
+    parents = _parent_map(all_runs)
+    root = _root_for_run(run_id, parents)
+
+    thread_runs = [
+        item
+        for item in all_runs
+        if _root_for_run(str(item["run_id"]), parents) == root
+    ]
+    thread_runs.sort(key=lambda x: ((x.get("started_at") or ""), str(x.get("run_id") or "")))
+    thread_run_ids = {str(item["run_id"]) for item in thread_runs if item.get("run_id")}
+
+    conn = sqlite3.connect(str(db_path()))
+    conn.row_factory = sqlite3.Row
+    placeholders = ",".join("?" for _ in thread_run_ids) or "''"
+    params: list[Any] = [project_id]
+    params.extend(sorted(thread_run_ids))
+    params.extend(sorted(thread_run_ids))
+    request_rows = conn.execute(
+        f"""
+        SELECT *
+        FROM requests
+        WHERE project_id = ?
+          AND (
+            parent_run_id IN ({placeholders})
+            OR child_run_id IN ({placeholders})
+          )
+        ORDER BY COALESCE(enqueued_ts, completed_ts, '') ASC, request_id ASC
+        """,
+        tuple(params),
+    ).fetchall()
+    conn.close()
+
+    requests = [dict(row) for row in request_rows]
+
+    return {
+        "run": run,
+        "thread_root_run_id": root,
+        "thread_runs": thread_runs,
+        "thread_requests": requests,
+    }
+
+
+def _project_row(project_id: str) -> dict[str, Any]:
+    row = load_one_row(
+        "SELECT project_id, master_kit_root, project_root FROM projects WHERE project_id = ?",
+        (project_id,),
+    )
+    if row is None:
+        raise KeyError("project not found")
+    return row
+
+
+def _resolve_artifact_path(
+    *,
+    project_id: str,
+    raw_path: str,
+    scope: str = "auto",
+) -> tuple[Path, Path]:
+    project = _project_row(project_id)
+    master_kit_root = Path(str(project["master_kit_root"])).expanduser().resolve()
+    project_root = Path(str(project["project_root"])).expanduser().resolve()
+
+    if scope not in {"auto", "master-kit", "project"}:
+        raise ValueError("invalid scope; expected auto|master-kit|project")
+
+    if scope == "master-kit":
+        roots: list[tuple[str, Path]] = [("master-kit", master_kit_root)]
+    elif scope == "project":
+        roots = [("project", project_root)]
+    else:
+        roots = [("master-kit", master_kit_root), ("project", project_root)]
+
+    path_raw = str(raw_path).strip()
+    path_obj = Path(path_raw)
+
+    candidates_by_scope: dict[str, list[Path]] = {}
+    for scope_name, root in roots:
+        candidates: list[Path] = []
+        if path_obj.is_absolute():
+            candidates.append(path_obj.resolve())
+        else:
+            normalized = path_raw.lstrip("/")
+            variants = [normalized]
+            if normalized.startswith("master-kit/"):
+                variants.append(normalized[len("master-kit/"):])
+            if normalized.startswith("project/"):
+                variants.append(normalized[len("project/"):])
+            seen: set[str] = set()
+            for v in variants:
+                if v in seen:
+                    continue
+                seen.add(v)
+                candidates.append((root / v).resolve())
+        candidates_by_scope[scope_name] = candidates
+
+    for scope_name, root in roots:
+        for candidate in candidates_by_scope.get(scope_name, []):
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            if candidate.is_file():
+                return root, candidate
+
+    raise FileNotFoundError("artifact not found")
+
+
+def _kind_for_artifact(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return "markdown"
+    if suffix == ".json":
+        return "json"
+    if suffix in {".log", ".txt", ".jsonl"}:
+        return "text"
+    return "text"
+
+
+def artifact_payload(
+    *,
+    project_id: str,
+    raw_path: str,
+    max_bytes: int | None = None,
+    scope: str = "auto",
+) -> dict[str, Any]:
+    max_cap = int(os.getenv("MASTER_KIT_DASHBOARD_ARTIFACT_MAX_BYTES", "240000"))
+    if max_bytes is None:
+        max_bytes = max_cap
+    max_bytes = max(1024, min(int(max_bytes), max_cap))
+
+    root, resolved = _resolve_artifact_path(project_id=project_id, raw_path=raw_path, scope=scope)
+    size = resolved.stat().st_size
+    to_read = min(size, max_bytes)
+    with resolved.open("rb") as fh:
+        raw = fh.read(to_read)
+    text = raw.decode("utf-8", errors="replace")
+    truncated = size > to_read
+
+    kind = _kind_for_artifact(resolved)
+    if kind == "json":
+        if resolved.suffix.lower() == ".jsonl":
+            rows: list[str] = []
+            for ln in text.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    payload = json.loads(ln)
+                    rows.append(json.dumps(payload, indent=2, sort_keys=True))
+                except Exception:
+                    rows.append(ln)
+            text = "\n".join(rows)
+        else:
+            try:
+                payload = json.loads(text)
+                text = json.dumps(payload, indent=2, sort_keys=True)
+            except Exception:
+                pass
+
+    rel_path = str(resolved.relative_to(root))
+    return {
+        "project_id": project_id,
+        "path": rel_path,
+        "kind": kind,
+        "bytes_total": size,
+        "bytes_read": to_read,
+        "truncated": truncated,
+        "text": text,
+    }
+
+
+def project_docs_payload(project_id: str) -> dict[str, Any]:
+    project = _project_row(project_id)
+    project_root = Path(str(project["project_root"])).expanduser().resolve()
+    master_kit_root = Path(str(project["master_kit_root"])).expanduser().resolve()
+
+    fixed_project_docs = [
+        "LAST_TOUCH.md",
+        "DOMAIN_PRIORS.md",
+        "CONSTRUCTION_LOG.md",
+        "CONSTRUCTIONS.md",
+        "DOMAIN_CONTEXT.md",
+        "RESEARCH_LOG.md",
+        "QUESTIONS.md",
+        "PRD.md",
+        "CLAUDE.md",
+        "README.md",
+    ]
+    fixed_master_docs = [
+        "claude-tdd-kit/LAST_TOUCH.md",
+        "claude-research-kit/DOMAIN_PRIORS.md",
+        "claude-research-kit/RESEARCH_LOG.md",
+        "claude-research-kit/QUESTIONS.md",
+        "claude-mathematics-kit/CONSTRUCTION_LOG.md",
+        "claude-mathematics-kit/CONSTRUCTIONS.md",
+        "claude-mathematics-kit/DOMAIN_CONTEXT.md",
+    ]
+
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_entry(scope_name: str, rel_path: str, *, required: bool) -> None:
+        key = (scope_name, rel_path)
+        if key in seen:
+            return
+        seen.add(key)
+
+        base = project_root if scope_name == "project" else master_kit_root
+        candidate = (base / rel_path).resolve()
+        if candidate.exists():
+            try:
+                candidate.relative_to(base)
+            except ValueError:
+                return
+        exists = candidate.is_file()
+        item: dict[str, Any] = {
+            "scope": scope_name,
+            "path": rel_path,
+            "name": candidate.name,
+            "required": required,
+            "exists": exists,
+        }
+        if exists:
+            stat = candidate.stat()
+            item["bytes"] = int(stat.st_size)
+            item["modified_at"] = dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z")
+        entries.append(item)
+
+    for rel in fixed_project_docs:
+        add_entry("project", rel, required=True)
+
+    for rel in fixed_master_docs:
+        add_entry("master-kit", rel, required=False)
+
+    for folder in ("docs", "specs", "experiments"):
+        base = project_root / folder
+        if not base.is_dir():
+            continue
+        for p in sorted(base.glob("*.md"))[:80]:
+            rel = str(p.relative_to(project_root))
+            add_entry("project", rel, required=False)
+
+    entries.sort(
+        key=lambda x: (
+            0 if x.get("scope") == "project" else 1,
+            0 if x.get("required") else 1,
+            str(x.get("name", "")).lower(),
+            str(x.get("path", "")).lower(),
+        )
+    )
+    return {
+        "project_id": project_id,
+        "docs": entries,
+    }

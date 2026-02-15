@@ -6,7 +6,7 @@ A monorepo orchestrator wrapping three domain kits. You drive them through `tool
 
 | Kit | Directory | Phases |
 |-----|-----------|--------|
-| **TDD** | `claude-tdd-kit/` | red, green, refactor, ship, full |
+| **TDD** | `claude-tdd-kit/` | red, green, refactor, ship, full, watch |
 | **Research** | `claude-research-kit/` | survey, frame, run, read, log, cycle, full, program, status |
 | **Math** | `claude-mathematics-kit/` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
 
@@ -35,7 +35,7 @@ When one kit needs results from another, use the interop queue:
 
 ```bash
 # 1. Create request
-tools/kit request --from research --to math --action math.status \
+tools/kit request --from research --from-phase status --to math --action math.status \
   --run-id <parent_run_id> --json
 
 # 2. Execute it
@@ -43,6 +43,17 @@ tools/pump --once --request <request_id> --json
 ```
 
 Responses land in `interop/responses/<request_id>.json`.
+`--from-phase` is optional; if omitted, `tools/pump` infers it from the parent run metadata/events.
+
+## Global Dashboard (Optional)
+
+```bash
+tools/dashboard register --master-kit-root "$(pwd)" --project-root "${PROJECT_ROOT:-$(pwd)}"
+tools/dashboard index
+tools/dashboard serve --host 127.0.0.1 --port 7340
+```
+
+Use project filtering in the UI to inspect active runs, run threads, and cross-phase edges.
 
 ## Reading Logs Without Blowing Context
 

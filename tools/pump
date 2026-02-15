@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import glob
 import json
 import os
@@ -17,10 +18,110 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
 RESPONSES_DIR = REPO_ROOT / "interop" / "responses"
 RUNS_DIR = REPO_ROOT / "runs"
+DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
 
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def parse_project_id(stdout: str) -> str | None:
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        project_id = payload.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            return project_id
+    return None
+
+
+def dashboard_manage() -> str | None:
+    if not env_enabled("MASTER_KIT_DASHBOARD_AUTOSTART", default=True):
+        return None
+    if not DASHBOARD_TOOL.is_file():
+        return None
+
+    project_root = Path(os.getenv("PROJECT_ROOT", str(REPO_ROOT))).expanduser().resolve()
+    label = os.getenv("MASTER_KIT_DASHBOARD_LABEL", project_root.name)
+    register = subprocess.run(
+        [
+            str(DASHBOARD_TOOL),
+            "register",
+            "--master-kit-root",
+            str(REPO_ROOT),
+            "--project-root",
+            str(project_root),
+            "--label",
+            label,
+        ],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    project_id = parse_project_id(register.stdout)
+    if register.returncode != 0:
+        print(
+            f"[tools/pump] dashboard register failed (continuing): {register.stderr.strip() or register.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return project_id
+
+    ensure = subprocess.run(
+        [
+            str(DASHBOARD_TOOL),
+            "ensure-service",
+            "--wait-seconds",
+            os.getenv("MASTER_KIT_DASHBOARD_ENSURE_WAIT_SECONDS", "1"),
+        ],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if ensure.returncode != 0:
+        print(
+            f"[tools/pump] dashboard ensure-service failed (continuing): {ensure.stderr.strip() or ensure.stdout.strip()}",
+            file=sys.stderr,
+        )
+    return project_id
+
+
+def dashboard_index_project(project_id: str | None) -> None:
+    if not env_enabled("MASTER_KIT_DASHBOARD_AUTO_INDEX", default=True):
+        return
+    if not DASHBOARD_TOOL.is_file():
+        return
+    if not isinstance(project_id, str) or not project_id:
+        return
+
+    proc = subprocess.run(
+        [str(DASHBOARD_TOOL), "index", "--project-id", project_id],
+        cwd=str(REPO_ROOT),
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        print(
+            f"[tools/pump] dashboard index failed (continuing): {proc.stderr.strip() or proc.stdout.strip()}",
+            file=sys.stderr,
+        )
 
 
 def rel_repo(path: Path) -> str:
@@ -35,8 +136,13 @@ def append_event(events_path: Path, event: str, **payload: Any) -> None:
     record = {"ts": now_iso(), "event": event}
     record.update(payload)
     with events_path.open("a", encoding="utf-8") as fh:
-        json.dump(record, fh, sort_keys=True)
-        fh.write("\n")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            json.dump(record, fh, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def request_file_from_arg(raw: str) -> Path:
@@ -177,6 +283,8 @@ def expand_deliverables(patterns: list[str]) -> list[str]:
 
 
 def execute_one(request_path: Path, *, json_out: bool) -> int:
+    dashboard_project_id = dashboard_manage()
+
     payload = load_json(request_path)
     validate_request(payload)
 
@@ -191,6 +299,8 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         if parent_kit == from_kit:
             from_phase = parent_phase
 
+    request_reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), str) else None
+
     parent_events = RUNS_DIR / parent_run_id / "events.jsonl"
     append_event(
         parent_events,
@@ -202,6 +312,7 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         to_kit=to_kit,
         to_phase=to_phase,
         action=payload["action"],
+        reasoning=request_reasoning,
     )
 
     cmd = [
@@ -268,6 +379,7 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         "manifest_path": manifest_path,
         "deliverables": deliverables,
         "notes": notes,
+        "request_reasoning": request_reasoning,
     }
 
     RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
@@ -287,6 +399,7 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
         to_kit=to_kit,
         to_phase=to_phase,
         action=payload["action"],
+        reasoning=request_reasoning,
         pointers={
             "capsule_path": capsule_path,
             "manifest_path": manifest_path,
@@ -314,6 +427,8 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
             print(f"capsule_path={capsule_path}")
         if isinstance(manifest_path, str):
             print(f"manifest_path={manifest_path}")
+
+    dashboard_index_project(dashboard_project_id)
 
     return 0 if status == "ok" else 1
 

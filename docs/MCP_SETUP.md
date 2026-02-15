@@ -91,6 +91,8 @@ Replace `YOUR_TOKEN_HERE` with your token value.
 Use either Claude or Codex MCP client to call:
 
 - `master.run` with `{"kit":"research","action":"status"}`
+- `master.request_create` with optional `from_phase`, for example:
+  - `{"from_kit":"research","from_phase":"status","to_kit":"math","action":"math.status","run_id":"<parent_run_id>"}`
 
 Verify result contains pointers such as:
 
@@ -104,8 +106,8 @@ Verify result contains pointers such as:
 Wrappers execute one request and preserve MCP env:
 
 ```bash
-tools/spawn-claude-worker <request_id>
-tools/spawn-codex-worker <request_id>
+tools/spawn-claude-worker <request_id> [--project-root /path/to/master-kit] [--prefer-cli]
+tools/spawn-codex-worker <request_id> [--project-root /path/to/master-kit] [--prefer-cli]
 ```
 
 If direct CLI MCP invocation flags are unavailable, wrappers fallback to:
@@ -113,6 +115,12 @@ If direct CLI MCP invocation flags are unavailable, wrappers fallback to:
 ```bash
 tools/pump --once --request <request_id> --json
 ```
+
+Optional toggles:
+
+- `MASTER_KIT_SPAWN_TRY_CLAUDE=1` — attempt direct Claude CLI pump call before fallback.
+- `MASTER_KIT_SPAWN_TRY_CODEX=1` — attempt direct Codex CLI pump call before fallback.
+- `CODEX_SANDBOX_NETWORK_DISABLED=1` — force Codex wrapper fallback to local `tools/pump`.
 
 ## 8) Stop server
 

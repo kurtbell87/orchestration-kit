@@ -55,10 +55,14 @@ master-kit/
     server.py
     schema.json
   tools/
+    bootstrap
     dashboard
     kit
     pump
     query-log
+    smoke-run
+    validate-capsules
+    validate-manifests
     mcp-serve
     mcp-token
     spawn-claude-worker
@@ -78,6 +82,14 @@ A run is identified by `run_id` and emits:
 - `runs/<run_id>/manifests/<kit>_<phase>.json`
 - `runs/<run_id>/logs/<kit>_<phase>.log`
 - `runs/<run_id>/events.jsonl`
+
+Run metadata must include:
+
+- `project_root`
+- `master_kit_root`
+- `agent_runtime`
+- `host`
+- `pid`
 
 ### 4.2 Capsule Contract
 
@@ -109,6 +121,7 @@ Requests are created at `interop/requests/<request_id>.json` and include:
 - expected deliverables
 
 Routing policy: any `{from_kit, from_phase}` may call any `{to_kit, to_phase}`. No static adjacency restrictions are allowed.
+When `from_phase` is omitted, pump execution infers it from parent run metadata/events.
 
 ### 4.5 Interop Response Contract
 
@@ -151,6 +164,7 @@ All tool outputs must remain pointer-oriented and bounded by `MASTER_KIT_MCP_MAX
 - `tools/spawn-codex-worker <request_id> [--project-root ...]`
 
 Wrappers must export required MCP env and execute exactly one request, with `tools/pump --once` fallback when direct CLI MCP invocation flags are unavailable.
+Wrapper-attributed runtime identity must be surfaced via run metadata (`agent_runtime`).
 
 ### 6.4 Dashboard Layer Requirements
 
@@ -158,9 +172,13 @@ Wrappers must export required MCP env and execute exactly one request, with `too
   - global project registration (`master-kit` clone roots + owning project roots)
   - indexed run/query views across all registered projects
   - per-project filters
+  - project listing and unregister operations
+  - full index and project-scoped index refresh modes
   - run-thread exploration by `parent_run_id`
   - cross-phase edge summaries derived from request events
 - Dashboard data must be derived from pointer artifacts (`runs/*/events.jsonl`, manifests, request/response files), not transcripts.
+- Project-scoped refresh must not delete data for other indexed projects.
+- Dashboard persistence defaults to `~/.master-kit-dashboard`, supports `MASTER_KIT_DASHBOARD_HOME` override, and may fallback to `/tmp/master-kit-dashboard` when needed.
 
 ## 7) Testing and CI Requirements
 
@@ -170,6 +188,7 @@ Required coverage includes:
 - capsule/manifest validators
 - MCP auth + bounded output + pointer-only tool behavior
 - cross-kit routing matrix + cycle coverage (`tdd -> research -> math -> tdd`)
+- dashboard index coverage (multi-project + project-scoped refresh without data loss)
 - end-to-end smoke flow (`tools/smoke-run`)
 
 CI must run unit tests, MCP integration tests, smoke run, and validators.

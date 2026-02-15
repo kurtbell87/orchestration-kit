@@ -1,0 +1,133 @@
+"""Dashboard package — public API re-exports for test compatibility."""
+from .config import (
+    REPO_ROOT,
+    now_iso,
+    dashboard_home,
+    ensure_dashboard_home,
+    registry_path,
+    db_path,
+    service_state_path,
+    service_log_path,
+    rel_to,
+    coerce_path,
+    current_master_kit_root,
+    current_project_root,
+    project_id_for,
+)
+from .registry import (
+    load_registry,
+    save_registry,
+    upsert_registry_project,
+    remove_registry_project,
+)
+from .schema import ensure_schema
+from .parsing import (
+    parse_jsonl,
+    resolve_pointer,
+    parse_manifest_metadata,
+    parse_run,
+)
+from .service import (
+    load_service_state,
+    save_service_state,
+    pid_alive,
+    healthcheck,
+)
+from .indexing import (
+    index_projects,
+    prepare_projects,
+    maybe_seed_registry,
+)
+from .payloads import (
+    load_dashboard_rows,
+    load_one_row,
+    summary_payload,
+    graph_payload,
+    parse_int,
+    list_runs_payload,
+    run_detail_payload,
+    artifact_payload,
+    project_docs_payload,
+)
+from .dag import dag_payload
+from .server import DashboardHandler, DashboardServer
+from .cli import (
+    cmd_register,
+    cmd_unregister,
+    cmd_projects,
+    cmd_index,
+    cmd_ensure_service,
+    cmd_service_status,
+    cmd_stop_service,
+    cmd_serve,
+    cmd_neo4j_sync,
+    build_parser,
+    main,
+)
+
+# Neo4j modules are optional — only available when the 'neo4j' package is installed.
+try:
+    from .neo4j_sync import sync_project, sync_all
+    from .neo4j_queries import (
+        trace_reasoning_chain,
+        find_failed_runs_with_ancestors,
+        interop_edges_with_reasoning,
+        critical_path,
+    )
+except ImportError:
+    pass
+
+__all__ = [
+    "REPO_ROOT",
+    "now_iso",
+    "dashboard_home",
+    "ensure_dashboard_home",
+    "registry_path",
+    "db_path",
+    "service_state_path",
+    "service_log_path",
+    "rel_to",
+    "coerce_path",
+    "current_master_kit_root",
+    "current_project_root",
+    "project_id_for",
+    "load_registry",
+    "save_registry",
+    "upsert_registry_project",
+    "remove_registry_project",
+    "ensure_schema",
+    "parse_jsonl",
+    "resolve_pointer",
+    "parse_manifest_metadata",
+    "parse_run",
+    "load_service_state",
+    "save_service_state",
+    "pid_alive",
+    "healthcheck",
+    "index_projects",
+    "prepare_projects",
+    "maybe_seed_registry",
+    "load_dashboard_rows",
+    "load_one_row",
+    "summary_payload",
+    "graph_payload",
+    "parse_int",
+    "list_runs_payload",
+    "run_detail_payload",
+    "artifact_payload",
+    "project_docs_payload",
+    "dag_payload",
+    "DashboardHandler",
+    "DashboardServer",
+    "cmd_register",
+    "cmd_unregister",
+    "cmd_projects",
+    "cmd_index",
+    "cmd_ensure_service",
+    "cmd_service_status",
+    "cmd_stop_service",
+    "cmd_serve",
+    "cmd_neo4j_sync",
+    "build_parser",
+    "main",
+]

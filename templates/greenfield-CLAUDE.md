@@ -4,7 +4,7 @@
 
 | Kit | Script | Phases |
 |-----|--------|--------|
-| **TDD** | `./tdd.sh` | red, green, refactor, ship, full |
+| **TDD** | `./tdd.sh` | red, green, refactor, ship, full, watch |
 | **Research** | `./experiment.sh` | survey, frame, run, read, log, cycle, full, program, status |
 | **Math** | `./math.sh` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
 
@@ -19,6 +19,26 @@ master-kit/tools/kit --json research status
 ```
 
 Run artifacts land in `master-kit/runs/<run_id>/` — capsules, manifests, logs, events.
+
+## Cross-Kit Interop (Advanced)
+
+```bash
+master-kit/tools/kit request --from research --from-phase status --to math --action math.status \
+  --run-id <parent_run_id> --json
+master-kit/tools/pump --once --request <request_id> --json
+```
+
+`--from-phase` is optional; if omitted, `master-kit/tools/pump` infers it from the parent run metadata/events.
+
+## Global Dashboard (Optional)
+
+```bash
+master-kit/tools/dashboard register --master-kit-root ./master-kit --project-root "$(pwd)"
+master-kit/tools/dashboard index
+master-kit/tools/dashboard serve --host 127.0.0.1 --port 7340
+```
+
+Open `http://127.0.0.1:7340` to explore runs across projects and filter by project.
 
 ## State Files (at project root)
 

@@ -85,6 +85,7 @@ class MCPServerTests(unittest.TestCase):
                 "MASTER_KIT_MCP_PORT": str(cls.port),
                 "MASTER_KIT_MCP_TOKEN": cls.token,
                 "MASTER_KIT_MCP_MAX_OUTPUT_BYTES": str(cls.max_output_bytes),
+                "MASTER_KIT_DASHBOARD_AUTOSTART": "0",
             }
         )
 

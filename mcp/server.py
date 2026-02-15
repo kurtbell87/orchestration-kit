@@ -118,6 +118,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "action": {"type": "string"},
                 "args": {"type": "array", "items": {"type": "string"}},
                 "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                "reasoning": {"type": "string", "description": "1-3 sentence justification for this dispatch"},
             },
             "required": ["kit", "action"],
             "additionalProperties": False,
@@ -147,6 +148,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "deliverables_expected": {"type": "array", "items": {"type": "string"}},
                 "priority": {"type": "string", "enum": ["low", "normal", "high"]},
+                "reasoning": {"type": "string", "description": "1-3 sentence justification for this request"},
             },
             "required": ["from_kit", "to_kit", "action"],
             "additionalProperties": False,
@@ -233,6 +235,9 @@ class MasterKitFacade:
         env_overrides = coerce_env(payload.get("env"))
 
         cmd = [str(self._tool_path("kit")), "--json", kit, action, *args]
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            cmd.extend(["--reasoning", reasoning])
         proc = self._run_cmd(cmd, extra_env=env_overrides)
 
         try:
@@ -316,6 +321,10 @@ class MasterKitFacade:
         ]
         if isinstance(from_phase, str) and from_phase.strip():
             cmd.extend(["--from-phase", from_phase])
+
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            cmd.extend(["--reasoning", reasoning])
 
         for item in args:
             cmd.extend(["--arg", item])
