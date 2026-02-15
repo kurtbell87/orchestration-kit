@@ -1063,10 +1063,19 @@ def run_execute(argv: list[str]) -> int:
     project_root = run_project_root()
     results: list[dict[str, Any]] = []
 
-    def _dispatch(label: str, cmd: list[str]) -> int:
+    def _dispatch(label: str, cmd: list[str], extra_env: dict[str, str] | None = None) -> int:
         """Run a kit phase, track result. Returns exit code."""
         append_event(events_path, "execute_phase_started", run_id=run_id, label=label)
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(project_root), env=os.environ.copy())
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(project_root), env=env)
+        # Write phase output to log file for diagnostics (don't hold in context or print)
+        phase_log = run_root / "logs" / f"execute_{label.replace('.', '_')}.log"
+        phase_log.write_text(
+            proc.stdout + (f"\n--- stderr ---\n{proc.stderr}" if proc.stderr else ""),
+            encoding="utf-8",
+        )
         phase_result = {"label": label, "exit_code": proc.returncode}
         results.append(phase_result)
         append_event(events_path, "execute_phase_finished", run_id=run_id, **phase_result)
@@ -1086,9 +1095,14 @@ def run_execute(argv: list[str]) -> int:
 
     for kit in plan.get("kits", []):
         if kit == "tdd" and "tdd" in plan:
+            tdd_env: dict[str, str] = {}
+            tdd_conf = plan["tdd"]
+            for key in ("build_cmd", "test_cmd"):
+                if tdd_conf.get(key):
+                    tdd_env[key.upper()] = tdd_conf[key]
             for step in plan["tdd"].get("build_order", []):
                 label = f"tdd.full.step-{step['step']}"
-                rc = _dispatch(label, [kit_tool, "tdd", "full", step["spec_file"], "--json", "--parent-run-id", run_id])
+                rc = _dispatch(label, [kit_tool, "tdd", "full", step["spec_file"], "--json", "--parent-run-id", run_id], extra_env=tdd_env or None)
                 if rc != 0:
                     return _emit_failure(label, rc)
 

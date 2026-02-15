@@ -202,6 +202,33 @@ run_greenfield_install() {
     return 0
   fi
 
+  # ── Step 1b: Ensure git repo + optional remote ────────────────────────────
+
+  if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "[install] initializing git repository"
+    git -C "$PROJECT_ROOT" init --quiet
+    git -C "$PROJECT_ROOT" commit --allow-empty -m "init" --quiet
+  fi
+
+  if ! git -C "$PROJECT_ROOT" remote get-url origin &>/dev/null; then
+    echo ""
+    echo "[install] No git remote 'origin' configured."
+    echo "  The TDD kit's ship phase requires a remote to push to."
+    echo ""
+    read -rp "[install] Configure a git remote now? [y/N] " CONFIGURE_REMOTE
+    if [[ "$CONFIGURE_REMOTE" =~ ^[Yy] ]]; then
+      read -rp "[install] Remote URL: " REMOTE_URL
+      if [[ -n "$REMOTE_URL" ]]; then
+        git -C "$PROJECT_ROOT" remote add origin "$REMOTE_URL"
+        echo "[install]   origin set to $REMOTE_URL"
+      else
+        echo "[install]   skipped (empty URL)"
+      fi
+    else
+      echo "[install]   skipped — you can add one later: git remote add origin <url>"
+    fi
+  fi
+
   # ── Step 2: Deploy .claude/ ────────────────────────────────────────────────
 
   echo "[install] deploying .claude/ to project root"

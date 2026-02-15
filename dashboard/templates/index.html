@@ -269,6 +269,13 @@
       outline: 1px solid var(--accent);
       background: rgba(14, 165, 233, 0.08);
     }
+    .doc-tabs button.template { opacity: 0.4; }
+    .json-key { color: var(--accent); }
+    .json-str { color: #4ade80; }
+    .json-num { color: #fbbf24; }
+    .json-kw { color: var(--muted); }
+    .log-error { color: var(--bad); }
+    .log-warn { color: var(--warn); }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     .dag-node circle.running { animation: pulse 1.5s ease-in-out infinite; }
 
@@ -424,6 +431,25 @@ function renderMarkdown(md) {
   return html.join('\n') || '<p class="muted">(empty)</p>';
 }
 
+function renderJson(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/&quot;([^&]+?)&quot;:/g, '<span class="json-key">&quot;$1&quot;</span>:');
+  html = html.replace(/: &quot;(.*?)&quot;/g, ': <span class="json-str">&quot;$1&quot;</span>');
+  html = html.replace(/: (\d+)/g, ': <span class="json-num">$1</span>');
+  html = html.replace(/: (true|false|null)/g, ': <span class="json-kw">$1</span>');
+  return '<pre><code class="language-json">' + html + '</code></pre>';
+}
+
+function renderLog(text) {
+  const lines = String(text || '').split('\n');
+  return '<pre>' + lines.map(line => {
+    const esc = escapeHtml(line);
+    if (/ERROR/i.test(line)) return '<span class="log-error">' + esc + '</span>';
+    if (/WARN/i.test(line)) return '<span class="log-warn">' + esc + '</span>';
+    return esc;
+  }).join('\n') + '</pre>';
+}
+
 /* ─── DAG rendering ─── */
 const STATUS_COLOR = { ok: '#22c55e', failed: '#ef4444', running: '#f59e0b', unknown: '#64748b' };
 
@@ -531,16 +557,27 @@ async function loadProjectDocs(force) {
     body.innerHTML = '(no files)';
     return;
   }
-  tabs.innerHTML = existing.map(d => {
+  const populated = existing.filter(d => d.populated !== false);
+  const unpopulated = existing.filter(d => d.populated === false);
+  const makeBtn = (d, cls) => {
     const p = String(d.path||'');
     const s = String(d.scope||'project');
-    return `<button data-path="${escapeHtml(p)}" data-scope="${escapeHtml(s)}">${escapeHtml(d.name||p)}</button>`;
-  }).join('');
-  const mustReset = force || !docState.path || !existing.some(d => String(d.path) === docState.path);
+    return `<button data-path="${escapeHtml(p)}" data-scope="${escapeHtml(s)}" data-populated="${d.populated !== false ? 'true' : 'false'}"${cls ? ' class="'+cls+'"' : ''}>${escapeHtml(d.name||p)}</button>`;
+  };
+  tabs.innerHTML = populated.map(d => makeBtn(d, '')).join('') + unpopulated.map(d => makeBtn(d, 'template')).join('');
+  const mustReset = force || !docState.path || !populated.some(d => String(d.path) === docState.path);
   if (mustReset) {
-    const preferred = existing.find(d => ['LAST_TOUCH.md','DOMAIN_PRIORS.md','CONSTRUCTION_LOG.md'].includes(String(d.name||''))) || existing[0];
-    docState.path = String(preferred.path||'');
-    docState.scope = String(preferred.scope||'project');
+    if (populated.length) {
+      const preferred = populated.find(d => ['LAST_TOUCH.md','DOMAIN_PRIORS.md','CONSTRUCTION_LOG.md'].includes(String(d.name||''))) || populated[0];
+      docState.path = String(preferred.path||'');
+      docState.scope = String(preferred.scope||'project');
+    } else {
+      docState.path = '';
+      meta.textContent = `project ${pid}`;
+      body.className = 'sidebar-body markdown';
+      body.innerHTML = '<p class="muted">State files exist but are not yet populated.</p>';
+      return;
+    }
   }
   highlightDocTab();
   if (docState.path) await loadDocContent();
@@ -579,6 +616,13 @@ el('doc-tabs').addEventListener('click', async (evt) => {
   docState.path = btn.getAttribute('data-path') || '';
   docState.scope = btn.getAttribute('data-scope') || 'project';
   highlightDocTab();
+  if (btn.getAttribute('data-populated') === 'false') {
+    el('sidebar-meta').textContent = docState.path;
+    const body = el('sidebar-body');
+    body.className = 'sidebar-body markdown';
+    body.innerHTML = '<p class="muted">Template \u2014 not yet populated</p>';
+    return;
+  }
   await safeRefresh(loadDocContent);
 });
 
@@ -691,13 +735,18 @@ el('detail').addEventListener('click', async (evt) => {
   if (!meta || !body) return;
   const trunc = payload.truncated ? ' (truncated)' : '';
   meta.textContent = `${payload.path} \u2022 ${payload.kind} \u2022 ${payload.bytes_read}/${payload.bytes_total}b${trunc}`;
+  body.style.maxHeight = '240px';
   if (payload.kind === 'markdown') {
     body.className = 'sidebar-body markdown';
-    body.style.maxHeight = '240px';
     body.innerHTML = renderMarkdown(payload.text || '');
+  } else if (payload.kind === 'json' || payload.kind === 'jsonl') {
+    body.className = 'sidebar-body';
+    body.innerHTML = renderJson(payload.text || '');
+  } else if (payload.path && payload.path.endsWith('.log')) {
+    body.className = 'sidebar-body';
+    body.innerHTML = renderLog(payload.text || '');
   } else {
     body.className = 'sidebar-body text-view';
-    body.style.maxHeight = '240px';
     body.textContent = payload.text || '';
   }
 });

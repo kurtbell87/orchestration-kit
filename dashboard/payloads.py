@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import filecmp
 import json
 import os
 import sqlite3
@@ -341,7 +342,9 @@ def _kind_for_artifact(path: Path) -> str:
         return "markdown"
     if suffix == ".json":
         return "json"
-    if suffix in {".log", ".txt", ".jsonl"}:
+    if suffix == ".jsonl":
+        return "jsonl"
+    if suffix in {".log", ".txt"}:
         return "text"
     return "text"
 
@@ -367,7 +370,7 @@ def artifact_payload(
     truncated = size > to_read
 
     kind = _kind_for_artifact(resolved)
-    if kind == "json":
+    if kind in {"json", "jsonl"}:
         if resolved.suffix.lower() == ".jsonl":
             rows: list[str] = []
             for ln in text.splitlines():
@@ -426,8 +429,26 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
         "claude-mathematics-kit/DOMAIN_CONTEXT.md",
     ]
 
+    kit_template_dirs = [
+        master_kit_root / "claude-tdd-kit" / "templates",
+        master_kit_root / "claude-research-kit" / "templates",
+        master_kit_root / "claude-mathematics-kit" / "templates",
+    ]
+
     entries: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+
+    def _matches_template(file_path: Path) -> bool:
+        fname = file_path.name
+        for tpl_dir in kit_template_dirs:
+            tpl = tpl_dir / fname
+            if tpl.is_file():
+                try:
+                    if filecmp.cmp(str(file_path), str(tpl), shallow=False):
+                        return True
+                except OSError:
+                    continue
+        return False
 
     def add_entry(scope_name: str, rel_path: str, *, required: bool) -> None:
         key = (scope_name, rel_path)
@@ -456,6 +477,7 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
             item["modified_at"] = dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(
                 timespec="seconds"
             ).replace("+00:00", "Z")
+            item["populated"] = not _matches_template(candidate)
         entries.append(item)
 
     for rel in fixed_project_docs:
