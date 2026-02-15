@@ -3,6 +3,9 @@
 
 Usage:
   tools/kit <kit> <phase> [args...]
+  tools/kit plan <spec-file> [--approve] [--kits tdd,research] [--json]
+  tools/kit seed --plan <plan-file> [--kit <name>] [--json]
+  tools/kit execute --plan <plan-file> [--json]
   tools/kit request [options]
 """
 
@@ -28,6 +31,7 @@ PROJECT_ROOT = Path(os.environ["PROJECT_ROOT"]) if os.environ.get("PROJECT_ROOT"
 RUNS_DIR = REPO_ROOT / "runs"
 INTEROP_REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
 DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
+PROMPTS_DIR = REPO_ROOT / ".claude" / "prompts"
 
 KIT_CONFIG: dict[str, dict[str, Any]] = {
     "tdd": {
@@ -420,6 +424,88 @@ def write_capsule(
     capsule_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
+def extract_json_block(text: str) -> dict | None:
+    """Extract a JSON object from LLM output, handling code blocks and preamble."""
+    text = text.strip()
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    start = text.find('{')
+    end = text.rfind('}')
+    if start >= 0 and end > start:
+        try:
+            obj = json.loads(text[start:end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def validate_plan(plan: dict) -> list[str]:
+    """Validate a bootstrap plan. Returns list of error strings (empty = valid)."""
+    errors: list[str] = []
+    if plan.get("version") != 1:
+        errors.append("version must be 1")
+    if not isinstance(plan.get("spec_file"), str):
+        errors.append("spec_file must be a string")
+    kits = plan.get("kits")
+    if not isinstance(kits, list) or not kits:
+        errors.append("kits must be a non-empty array")
+        return errors
+    valid_kits = {"tdd", "research", "math"}
+    for k in kits:
+        if k not in valid_kits:
+            errors.append(f"unknown kit: {k}")
+    if "tdd" in kits:
+        tdd = plan.get("tdd")
+        if not isinstance(tdd, dict):
+            errors.append("tdd section required when tdd in kits")
+        else:
+            bo = tdd.get("build_order")
+            if not isinstance(bo, list) or not bo:
+                errors.append("tdd.build_order must be a non-empty array")
+            else:
+                for i, step in enumerate(bo):
+                    if not isinstance(step.get("step"), int):
+                        errors.append(f"tdd.build_order[{i}].step must be an integer")
+                    if not isinstance(step.get("description"), str):
+                        errors.append(f"tdd.build_order[{i}].description must be a string")
+                    if not isinstance(step.get("spec_file"), str):
+                        errors.append(f"tdd.build_order[{i}].spec_file must be a string")
+    if "research" in kits:
+        if not isinstance(plan.get("research"), dict):
+            errors.append("research section required when research in kits")
+    if "math" in kits:
+        if not isinstance(plan.get("math"), dict):
+            errors.append("math section required when math in kits")
+    return errors
+
+
+def write_seed_files(files: dict[str, str], root: Path) -> list[str]:
+    """Write seed files to root directory. Returns list of relative paths written."""
+    written: list[str] = []
+    for rel_path, content in sorted(files.items()):
+        if rel_path.startswith("/") or ".." in Path(rel_path).parts:
+            raise ValueError(f"unsafe path in seed output: {rel_path}")
+        target = root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        written.append(rel_path)
+    return written
+
+
 def run_phase(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="tools/kit", add_help=True)
     parser.add_argument("kit", choices=sorted(KIT_CONFIG.keys()))
@@ -725,11 +811,331 @@ def make_request(argv: list[str]) -> int:
     return 0
 
 
+def run_plan(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="tools/kit plan", add_help=True)
+    parser.add_argument("spec_file")
+    parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--kits", default=None, help="Comma-separated kit list override")
+    parser.add_argument("--approve", action="store_true", help="Auto-chain seed and execute")
+    parser.add_argument("--run-id", default=None)
+    args = parser.parse_args(argv)
+
+    spec_path = Path(args.spec_file).resolve()
+    if not spec_path.is_file():
+        print(f"Error: spec file not found: {args.spec_file}", file=sys.stderr)
+        return 1
+
+    prompt_path = PROMPTS_DIR / "bootstrap-plan.md"
+    if not prompt_path.is_file():
+        print(f"Error: prompt not found: {prompt_path}", file=sys.stderr)
+        return 1
+
+    project_root = run_project_root()
+    run_id = args.run_id or make_run_id()
+    run_root = RUNS_DIR / run_id
+    ensure_run_dirs(run_root)
+    events_path = run_root / "events.jsonl"
+    plan_path = run_root / "bootstrap-plan.json"
+    log_path = run_root / "logs" / "bootstrap_plan.log"
+
+    spec_content = spec_path.read_text(encoding="utf-8")
+    spec_hash = hashlib.sha256(spec_content.encode()).hexdigest()[:16]
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    user_msg = (
+        f"Spec file path: {rel_repo(spec_path)}\n"
+        f"Spec hash (first 16 of sha256): {spec_hash}\n\n"
+        f"{spec_content}"
+    )
+    if args.kits:
+        user_msg += f"\n\nKit override: only include these kits: {args.kits}"
+
+    append_event(events_path, "plan_started", run_id=run_id, spec_file=rel_repo(spec_path), spec_hash=spec_hash)
+
+    full_prompt = f"{system_prompt}\n\n---\n\n{user_msg}"
+    proc = subprocess.run(
+        ["claude", "--print", "--output-format", "text"],
+        input=full_prompt,
+        capture_output=True,
+        text=True,
+        cwd=str(project_root),
+        env=os.environ.copy(),
+    )
+    log_content = proc.stdout
+    if proc.stderr:
+        log_content += f"\n--- stderr ---\n{proc.stderr}"
+    log_path.write_text(log_content, encoding="utf-8")
+
+    if proc.returncode != 0:
+        append_event(events_path, "plan_failed", run_id=run_id, exit_code=proc.returncode)
+        print(f"Error: claude exited {proc.returncode}", file=sys.stderr)
+        return 1
+
+    plan = extract_json_block(proc.stdout)
+    if plan is None:
+        append_event(events_path, "plan_failed", run_id=run_id, reason="json_parse_error")
+        print("Error: could not extract JSON from plan agent output", file=sys.stderr)
+        print(f"Log: {rel_repo(log_path)}", file=sys.stderr)
+        return 1
+
+    # Inject spec metadata the agent may have omitted
+    plan.setdefault("version", 1)
+    plan["spec_file"] = rel_repo(spec_path)
+    plan["spec_hash"] = spec_hash
+
+    errors = validate_plan(plan)
+    if errors:
+        append_event(events_path, "plan_failed", run_id=run_id, reason="validation_errors", errors=errors)
+        print("Error: plan validation failed:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return 1
+
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    append_event(events_path, "plan_finished", run_id=run_id, plan_path=rel_repo(plan_path), kits=plan["kits"])
+
+    output = {
+        "run_id": run_id,
+        "status": "ok",
+        "plan_path": rel_repo(plan_path),
+        "kits": plan["kits"],
+        "tdd_steps": len(plan.get("tdd", {}).get("build_order", [])),
+    }
+
+    if args.json_out:
+        print(json.dumps(output, sort_keys=True))
+    else:
+        print(f"run_id={run_id}")
+        print(f"status=ok")
+        print(f"plan={rel_repo(plan_path)}")
+        print(f"kits={','.join(plan['kits'])}")
+
+    if args.approve:
+        seed_argv = ["--plan", str(plan_path)]
+        if args.json_out:
+            seed_argv.append("--json")
+        rc = run_seed(seed_argv)
+        if rc != 0:
+            return rc
+        exec_argv = ["--plan", str(plan_path)]
+        if args.json_out:
+            exec_argv.append("--json")
+        return run_execute(exec_argv)
+
+    return 0
+
+
+def run_seed(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="tools/kit seed", add_help=True)
+    parser.add_argument("--plan", required=True, dest="plan_file")
+    parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--kit", default=None, help="Seed only this kit (default: all in plan)")
+    args = parser.parse_args(argv)
+
+    plan_path = Path(args.plan_file).resolve()
+    if not plan_path.is_file():
+        print(f"Error: plan file not found: {args.plan_file}", file=sys.stderr)
+        return 1
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    spec_file = plan.get("spec_file", "")
+    project_root = run_project_root()
+
+    # Resolve spec content from project root, repo root, or absolute path
+    spec_content = ""
+    for base in [project_root, REPO_ROOT]:
+        candidate = base / spec_file
+        if candidate.is_file():
+            spec_content = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        candidate = Path(spec_file)
+        if candidate.is_file():
+            spec_content = candidate.read_text(encoding="utf-8")
+
+    # Determine run context from plan path (plan is in runs/<id>/bootstrap-plan.json)
+    run_root = plan_path.parent
+    events_path = run_root / "events.jsonl"
+    run_id = run_root.name
+
+    # If plan is not inside a run dir, create one
+    if not (run_root / "capsules").is_dir():
+        run_id = make_run_id()
+        run_root = RUNS_DIR / run_id
+        ensure_run_dirs(run_root)
+        events_path = run_root / "events.jsonl"
+
+    kits_to_seed = [args.kit] if args.kit else plan.get("kits", [])
+    all_written: dict[str, list[str]] = {}
+
+    for kit in kits_to_seed:
+        prompt_file = PROMPTS_DIR / f"bootstrap-seed-{kit}.md"
+        if not prompt_file.is_file():
+            print(f"Error: seed prompt not found: {prompt_file}", file=sys.stderr)
+            return 1
+
+        seed_prompt = prompt_file.read_text(encoding="utf-8")
+        log_path = run_root / "logs" / f"bootstrap_seed_{kit}.log"
+
+        plan_json = json.dumps(plan, indent=2, sort_keys=True)
+        full_prompt = (
+            f"{seed_prompt}\n\n---\n\n"
+            f"Bootstrap plan:\n\n{plan_json}\n\n---\n\n"
+            f"User spec ({spec_file}):\n\n{spec_content}"
+        )
+
+        append_event(events_path, "seed_started", run_id=run_id, kit=kit)
+
+        proc = subprocess.run(
+            ["claude", "--print", "--output-format", "text"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            env=os.environ.copy(),
+        )
+        log_content = proc.stdout
+        if proc.stderr:
+            log_content += f"\n--- stderr ---\n{proc.stderr}"
+        log_path.write_text(log_content, encoding="utf-8")
+
+        if proc.returncode != 0:
+            append_event(events_path, "seed_failed", run_id=run_id, kit=kit, exit_code=proc.returncode)
+            print(f"Error: claude exited {proc.returncode} for seed-{kit}", file=sys.stderr)
+            return 1
+
+        result = extract_json_block(proc.stdout)
+        if result is None or "files" not in result:
+            append_event(events_path, "seed_failed", run_id=run_id, kit=kit, reason="json_parse_error")
+            print(f"Error: could not extract files JSON from seed-{kit} agent output", file=sys.stderr)
+            print(f"Log: {rel_repo(log_path)}", file=sys.stderr)
+            return 1
+
+        try:
+            written = write_seed_files(result["files"], project_root)
+        except ValueError as e:
+            append_event(events_path, "seed_failed", run_id=run_id, kit=kit, reason=str(e))
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
+        all_written[kit] = written
+        append_event(events_path, "seed_finished", run_id=run_id, kit=kit, files=written)
+
+    output = {
+        "run_id": run_id,
+        "status": "ok",
+        "seeded_kits": list(all_written.keys()),
+        "files_written": all_written,
+    }
+
+    if args.json_out:
+        print(json.dumps(output, sort_keys=True))
+    else:
+        print(f"run_id={run_id}")
+        print(f"status=ok")
+        for kit, files in all_written.items():
+            print(f"seed-{kit}={','.join(files)}")
+
+    return 0
+
+
+def run_execute(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="tools/kit execute", add_help=True)
+    parser.add_argument("--plan", required=True, dest="plan_file")
+    parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--run-id", default=None)
+    args = parser.parse_args(argv)
+
+    plan_path = Path(args.plan_file).resolve()
+    if not plan_path.is_file():
+        print(f"Error: plan file not found: {args.plan_file}", file=sys.stderr)
+        return 1
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    run_id = args.run_id or make_run_id()
+    run_root = RUNS_DIR / run_id
+    ensure_run_dirs(run_root)
+    events_path = run_root / "events.jsonl"
+
+    append_event(events_path, "execute_started", run_id=run_id, plan_path=str(plan_path), kits=plan.get("kits", []))
+
+    kit_tool = str(REPO_ROOT / "tools" / "kit")
+    project_root = run_project_root()
+    results: list[dict[str, Any]] = []
+
+    def _dispatch(label: str, cmd: list[str]) -> int:
+        """Run a kit phase, track result. Returns exit code."""
+        append_event(events_path, "execute_phase_started", run_id=run_id, label=label)
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(project_root), env=os.environ.copy())
+        phase_result = {"label": label, "exit_code": proc.returncode}
+        results.append(phase_result)
+        append_event(events_path, "execute_phase_finished", run_id=run_id, **phase_result)
+        return proc.returncode
+
+    def _emit_failure(label: str, rc: int) -> int:
+        append_event(events_path, "execute_failed", run_id=run_id, failed_at=label)
+        output = {"run_id": run_id, "status": "failed", "failed_at": label, "exit_code": rc, "results": results}
+        if args.json_out:
+            print(json.dumps(output, sort_keys=True))
+        else:
+            print(f"run_id={run_id}")
+            print(f"status=failed")
+            print(f"failed_at={label}")
+            print(f"exit_code={rc}")
+        return rc
+
+    for kit in plan.get("kits", []):
+        if kit == "tdd" and "tdd" in plan:
+            for step in plan["tdd"].get("build_order", []):
+                label = f"tdd.full.step-{step['step']}"
+                rc = _dispatch(label, [kit_tool, "tdd", "full", step["spec_file"], "--json", "--parent-run-id", run_id])
+                if rc != 0:
+                    return _emit_failure(label, rc)
+
+        elif kit == "research" and "research" in plan:
+            label = "research.program"
+            rc = _dispatch(label, [kit_tool, "research", "program", "--json", "--parent-run-id", run_id])
+            if rc != 0:
+                return _emit_failure(label, rc)
+
+        elif kit == "math" and "math" in plan:
+            label = "math.program"
+            rc = _dispatch(label, [kit_tool, "math", "program", "--json", "--parent-run-id", run_id])
+            if rc != 0:
+                return _emit_failure(label, rc)
+
+    append_event(events_path, "execute_finished", run_id=run_id, results=results)
+
+    output = {"run_id": run_id, "status": "ok", "results": results}
+    if args.json_out:
+        print(json.dumps(output, sort_keys=True))
+    else:
+        print(f"run_id={run_id}")
+        print(f"status=ok")
+        for r in results:
+            print(f"{r['label']}=exit:{r['exit_code']}")
+
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if not argv:
-        print("Usage: tools/kit <kit> <phase> [args...] | tools/kit request [options]", file=sys.stderr)
+        print(
+            "Usage: tools/kit <kit> <phase> [args...]\n"
+            "       tools/kit plan <spec-file> [--approve] [--json]\n"
+            "       tools/kit seed --plan <plan-file> [--json]\n"
+            "       tools/kit execute --plan <plan-file> [--json]\n"
+            "       tools/kit request [options]",
+            file=sys.stderr,
+        )
         return 2
 
+    if argv[0] == "plan":
+        return run_plan(argv[1:])
+    if argv[0] == "seed":
+        return run_seed(argv[1:])
+    if argv[0] == "execute":
+        return run_execute(argv[1:])
     if argv[0] == "request":
         return make_request(argv[1:])
 
