@@ -27,14 +27,6 @@ from .indexing import index_projects, prepare_projects, maybe_seed_registry
 from .service import load_service_state, save_service_state, pid_alive, healthcheck
 from .server import DashboardHandler, DashboardServer
 
-_HAS_NEO4J = False
-try:
-    from .neo4j_sync import sync_project as _neo4j_sync_project, sync_all as _neo4j_sync_all
-    _HAS_NEO4J = True
-except ImportError:
-    pass
-
-
 def cmd_register(args: argparse.Namespace) -> int:
     default_mk = current_master_kit_root()
     master_kit_root = coerce_path(args.master_kit_root, default_mk)
@@ -300,37 +292,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_neo4j_sync(args: argparse.Namespace) -> int:
-    if not _HAS_NEO4J:
-        try:
-            from .neo4j_sync import _require_neo4j
-            _require_neo4j()
-        except ImportError as exc:
-            print(str(exc), file=os.sys.stderr)
-            return 1
-
-    from .neo4j_sync import sync_project as do_sync_project, sync_all as do_sync_all
-
-    neo4j_mod = __import__("neo4j")
-
-    uri = args.uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    user = args.user or os.getenv("NEO4J_USER", "neo4j")
-    password = args.password or os.getenv("NEO4J_PASSWORD", "")
-
-    driver = neo4j_mod.GraphDatabase.driver(uri, auth=(user, password))
-
-    try:
-        db = str(db_path())
-        if args.project_id:
-            result = do_sync_project(args.project_id, driver, db)
-        else:
-            result = do_sync_all(driver, db)
-        print(json.dumps(result, sort_keys=True))
-        return 0
-    finally:
-        driver.close()
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tools/dashboard", add_help=True)
     sub = parser.add_subparsers(dest="cmd")
@@ -372,13 +333,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340")))
     p_serve.add_argument("--project-id", default=None)
     p_serve.set_defaults(func=cmd_serve)
-
-    p_neo4j = sub.add_parser("neo4j-sync", help="Sync SQLite data to Neo4j graph database")
-    p_neo4j.add_argument("--uri", default=None, help="Neo4j bolt URI (default: $NEO4J_URI or bolt://localhost:7687)")
-    p_neo4j.add_argument("--user", default=None, help="Neo4j user (default: $NEO4J_USER or neo4j)")
-    p_neo4j.add_argument("--password", default=None, help="Neo4j password (default: $NEO4J_PASSWORD)")
-    p_neo4j.add_argument("--project-id", default=None, help="Sync only this project (default: all)")
-    p_neo4j.set_defaults(func=cmd_neo4j_sync)
 
     return parser
 

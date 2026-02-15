@@ -60,22 +60,9 @@ from .cli import (
     cmd_service_status,
     cmd_stop_service,
     cmd_serve,
-    cmd_neo4j_sync,
     build_parser,
     main,
 )
-
-# Neo4j modules are optional — only available when the 'neo4j' package is installed.
-try:
-    from .neo4j_sync import sync_project, sync_all
-    from .neo4j_queries import (
-        trace_reasoning_chain,
-        find_failed_runs_with_ancestors,
-        interop_edges_with_reasoning,
-        critical_path,
-    )
-except ImportError:
-    pass
 
 __all__ = [
     "REPO_ROOT",
@@ -127,7 +114,6 @@ __all__ = [
     "cmd_service_status",
     "cmd_stop_service",
     "cmd_serve",
-    "cmd_neo4j_sync",
     "build_parser",
     "main",
 ]

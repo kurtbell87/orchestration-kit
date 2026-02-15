@@ -213,6 +213,7 @@ def dag_payload(project_id: str | None) -> dict[str, Any]:
             "kit": info["kit"],
             "phase": info["phase"],
             "reasoning": info.get("reasoning") or "",
+            "started_at": info.get("started_at") or "",
             "x": x,
             "y": y,
             "width": NODE_W,

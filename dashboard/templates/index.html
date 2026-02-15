@@ -269,6 +269,8 @@
       outline: 1px solid var(--accent);
       background: rgba(14, 165, 233, 0.08);
     }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .dag-node circle.running { animation: pulse 1.5s ease-in-out infinite; }
 
     @media (max-width: 900px) {
       .main { flex-direction: column; }
@@ -462,9 +464,16 @@ function renderDag(data) {
     svg += `<g class="dag-node" data-run-id="${escapeHtml(n.id)}" style="cursor:pointer">`;
     if (tooltip) svg += `<title>${tooltip}</title>`;
     svg += `<rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="8" fill="#1e293b" stroke="${fill}" stroke-width="2"/>`;
-    svg += `<circle cx="${n.x + 12}" cy="${n.y + n.height / 2}" r="5" fill="${fill}"/>`;
+    svg += `<circle cx="${n.x + 12}" cy="${n.y + n.height / 2}" r="5" fill="${fill}"${n.status === 'running' ? ' class="running"' : ''}/>`;
     svg += `<text x="${n.x + 22}" y="${n.y + 17}" fill="#e2e8f0" font-size="11" font-family="ui-monospace,monospace">${escapeHtml(n.label)}</text>`;
-    svg += `<text x="${n.x + 22}" y="${n.y + 32}" fill="#94a3b8" font-size="9" font-family="ui-monospace,monospace">${escapeHtml(n.id.length > 20 ? n.id.slice(0,20)+'...' : n.id)}</text>`;
+    if (n.status === 'running' && n.started_at) {
+      const elapsed = Math.floor((Date.now() - new Date(n.started_at).getTime()) / 1000);
+      const mm = Math.floor(elapsed / 60);
+      const ss = elapsed % 60;
+      svg += `<text x="${n.x + 22}" y="${n.y + 32}" fill="#f59e0b" font-size="9" font-family="ui-monospace,monospace">${mm}m ${ss}s</text>`;
+    } else {
+      svg += `<text x="${n.x + 22}" y="${n.y + 32}" fill="#94a3b8" font-size="9" font-family="ui-monospace,monospace">${escapeHtml(n.id.length > 20 ? n.id.slice(0,20)+'...' : n.id)}</text>`;
+    }
     svg += '</g>';
   }
 
@@ -732,6 +741,18 @@ el('kit').addEventListener('change', () => safeRefresh(loadDag));
     await loadAll();
   });
   setInterval(() => { void safeRefresh(loadDocContent); }, 5000);
+  let _prevRunning = 0;
+  setInterval(async () => {
+    try {
+      const pid = el('project').value;
+      const s = await api(`/api/summary?${qs({project_id: pid})}`);
+      const running = s.summary?.runs?.running_runs || 0;
+      if (running > 0 || _prevRunning > 0) {
+        await loadAll();
+      }
+      _prevRunning = running;
+    } catch (_) {}
+  }, 3000);
 })();
 </script>
 </body>
