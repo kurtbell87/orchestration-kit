@@ -33,61 +33,65 @@ INTEROP_REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
 DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
 PROMPTS_DIR = REPO_ROOT / ".claude" / "prompts"
 
+# KIT_STATE_DIR: greenfield sets to ".kit", monorepo leaves unset (defaults to "." = root).
+_KIT_SD = os.environ.get("KIT_STATE_DIR", ".")
+_SP = f"{_KIT_SD}/" if _KIT_SD != "." else ""
+
 KIT_CONFIG: dict[str, dict[str, Any]] = {
     "tdd": {
         "cwd": REPO_ROOT / "claude-tdd-kit",
-        "script": "./tdd.sh",
+        "script": f"./{_SP}tdd.sh",
         "truth_patterns": [
-            "PRD.md",
-            "LAST_TOUCH.md",
-            "docs/**",
+            f"{_SP}PRD.md",
+            f"{_SP}LAST_TOUCH.md",
+            f"{_SP}docs/**",
             "tests/**",
         ],
         "tracked_globs": [
-            "docs/**",
+            f"{_SP}docs/**",
             "src/**",
             "tests/**",
-            "PRD.md",
-            "LAST_TOUCH.md",
+            f"{_SP}PRD.md",
+            f"{_SP}LAST_TOUCH.md",
         ],
     },
     "research": {
         "cwd": REPO_ROOT / "claude-research-kit",
-        "script": "./experiment.sh",
+        "script": f"./{_SP}experiment.sh",
         "truth_patterns": [
-            "QUESTIONS.md",
-            "experiments/**",
-            "results/**/metrics.*",
+            f"{_SP}QUESTIONS.md",
+            f"{_SP}experiments/**",
+            f"{_SP}results/**/metrics.*",
             "analysis.md",
             "SYNTHESIS.md",
-            "RESEARCH_LOG.md",
+            f"{_SP}RESEARCH_LOG.md",
         ],
         "tracked_globs": [
-            "experiments/**",
-            "results/**",
+            f"{_SP}experiments/**",
+            f"{_SP}results/**",
             "analysis.md",
             "SYNTHESIS.md",
-            "RESEARCH_LOG.md",
-            "handoffs/**",
+            f"{_SP}RESEARCH_LOG.md",
+            f"{_SP}handoffs/**",
         ],
     },
     "math": {
         "cwd": REPO_ROOT / "claude-mathematics-kit",
-        "script": "./math.sh",
+        "script": f"./{_SP}math.sh",
         "truth_patterns": [
-            "specs/**",
-            "CONSTRUCTIONS.md",
-            "CONSTRUCTION_LOG.md",
+            f"{_SP}specs/**",
+            f"{_SP}CONSTRUCTIONS.md",
+            f"{_SP}CONSTRUCTION_LOG.md",
             "REVISION.md",
-            "results/**",
+            f"{_SP}results/**",
         ],
         "tracked_globs": [
-            "specs/**",
+            f"{_SP}specs/**",
             "**/*.lean",
-            "CONSTRUCTION_LOG.md",
+            f"{_SP}CONSTRUCTION_LOG.md",
             "REVISION.md",
-            "CONSTRUCTIONS.md",
-            "results/**",
+            f"{_SP}CONSTRUCTIONS.md",
+            f"{_SP}results/**",
         ],
     },
 }
@@ -494,11 +498,25 @@ def validate_plan(plan: dict) -> list[str]:
 
 
 def write_seed_files(files: dict[str, str], root: Path) -> list[str]:
-    """Write seed files to root directory. Returns list of relative paths written."""
+    """Write seed files to root directory. Returns list of relative paths written.
+
+    When KIT_STATE_DIR is set (greenfield), state files are redirected into the
+    kit subdirectory. Files that must stay at root (CLAUDE.md, .claude/) are
+    written directly.
+    """
+    # Paths that must remain at project root regardless of KIT_STATE_DIR.
+    _ROOT_ANCHORED = {"CLAUDE.md"}
+    _ROOT_PREFIXES = (".claude/",)
+
     written: list[str] = []
     for rel_path, content in sorted(files.items()):
         if rel_path.startswith("/") or ".." in Path(rel_path).parts:
             raise ValueError(f"unsafe path in seed output: {rel_path}")
+
+        # Redirect non-root files into KIT_STATE_DIR when set.
+        if _KIT_SD != "." and rel_path not in _ROOT_ANCHORED and not any(rel_path.startswith(p) for p in _ROOT_PREFIXES):
+            rel_path = f"{_KIT_SD}/{rel_path}"
+
         target = root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

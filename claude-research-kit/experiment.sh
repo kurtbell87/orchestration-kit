@@ -19,13 +19,16 @@ set -euo pipefail
 # Configuration -- edit these to match your project
 # ──────────────────────────────────────────────────────────────
 
+# Kit state directory — greenfield sets KIT_STATE_DIR=".kit", monorepo leaves unset.
+_SD="${KIT_STATE_DIR:-.}"
+
 # Directories
-EXPERIMENTS_DIR="${EXPERIMENTS_DIR:-experiments}"     # Experiment spec files
-RESULTS_DIR="${RESULTS_DIR:-results}"                 # Results output
-SRC_DIR="${SRC_DIR:-src}"                             # Model / training code
-DATA_DIR="${DATA_DIR:-data}"                          # Datasets
-CONFIGS_DIR="${CONFIGS_DIR:-configs}"                 # Training configs
-NOTEBOOKS_DIR="${NOTEBOOKS_DIR:-notebooks}"           # Analysis notebooks (optional)
+EXPERIMENTS_DIR="${EXPERIMENTS_DIR:-${_SD}/experiments}"     # Experiment spec files
+RESULTS_DIR="${RESULTS_DIR:-${_SD}/results}"                 # Results output
+SRC_DIR="${SRC_DIR:-src}"                                    # Model / training code
+DATA_DIR="${DATA_DIR:-data}"                                 # Datasets
+CONFIGS_DIR="${CONFIGS_DIR:-configs}"                        # Training configs
+NOTEBOOKS_DIR="${NOTEBOOKS_DIR:-notebooks}"                  # Analysis notebooks (optional)
 
 PROMPT_DIR=".claude/prompts"
 HOOK_DIR=".claude/hooks"
@@ -215,8 +218,8 @@ run_status() {
   echo ""
 
   # ── Open questions from QUESTIONS.md ──
-  if [[ -f QUESTIONS.md ]]; then
-    echo -e "${CYAN}Open Questions (QUESTIONS.md §4):${NC}"
+  if [[ -f "$_SD/QUESTIONS.md" ]]; then
+    echo -e "${CYAN}Open Questions ($_SD/QUESTIONS.md §4):${NC}"
     local in_section=false
     local q_total=0 q_not_started=0 q_in_progress=0 q_blocked=0 q_deferred=0
     while IFS= read -r line; do
@@ -239,10 +242,10 @@ run_status() {
           q_deferred=$((q_deferred + 1))
         fi
       fi
-    done < QUESTIONS.md
+    done < "$_SD/QUESTIONS.md"
     echo "  Total: $q_total  Not started: $q_not_started  In progress: $q_in_progress  Blocked: $q_blocked  Deferred: $q_deferred"
   else
-    echo -e "  ${YELLOW}QUESTIONS.md not found${NC}"
+    echo -e "  ${YELLOW}$_SD/QUESTIONS.md not found${NC}"
   fi
 
   echo ""
@@ -291,10 +294,10 @@ print(f\"  Last cycle:       {s.get('last_cycle_at', 'N/A')}\")
   echo ""
 
   # ── Handoff / Synthesis status ──
-  if [[ -f HANDOFF.md ]]; then
+  if [[ -f "$_SD/HANDOFF.md" ]]; then
     echo -e "  ${YELLOW}HANDOFF.md exists${NC} — program loop is paused pending handoff resolution"
   fi
-  if [[ -f SYNTHESIS.md ]]; then
+  if [[ -f "$_SD/SYNTHESIS.md" ]]; then
     echo -e "  ${GREEN}SYNTHESIS.md exists${NC} — synthesis report has been generated"
   fi
 
@@ -306,7 +309,7 @@ print(f\"  Last cycle:       {s.get('last_cycle_at', 'N/A')}\")
 # ──────────────────────────────────────────────────────────────
 
 validate_handoff() {
-  local file="${1:-HANDOFF.md}"
+  local file="${1:-$_SD/HANDOFF.md}"
   if [[ ! -f "$file" ]]; then
     echo -e "${RED}Error: $file not found${NC}" >&2
     return 1
@@ -327,16 +330,16 @@ validate_handoff() {
 }
 
 complete_handoff() {
-  local file="${1:-HANDOFF.md}"
+  local file="${1:-$_SD/HANDOFF.md}"
   if [[ ! -f "$file" ]]; then
     echo -e "${RED}Error: $file not found${NC}" >&2
     return 1
   fi
   validate_handoff "$file" || return 1
-  mkdir -p handoffs/completed
+  mkdir -p "$_SD/handoffs/completed"
   local slug
   slug=$(grep -m1 '^# Handoff:' "$file" | sed 's/^# Handoff:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
-  local dest="handoffs/completed/$(date +%Y%m%d-%H%M%S)-${slug}.md"
+  local dest="$_SD/handoffs/completed/$(date +%Y%m%d-%H%M%S)-${slug}.md"
   mv "$file" "$dest"
   echo -e "${GREEN}Handoff archived:${NC} $dest"
 }
@@ -367,12 +370,12 @@ run_survey() {
 - Source directory: $SRC_DIR
 - Existing experiments: $(list_experiment_specs | wc -l | tr -d ' ') spec(s) in $EXPERIMENTS_DIR (use Glob to discover)
 - Existing results: $(list_result_dirs | wc -l | tr -d ' ') result dir(s) in $RESULTS_DIR (use Glob to discover)
-- Research log: RESEARCH_LOG.md
-- Research questions: QUESTIONS.md
+- Research log: $_SD/RESEARCH_LOG.md
+- Research questions: $_SD/QUESTIONS.md
 - Train command: $TRAIN_CMD
 - Eval command: $EVAL_CMD
 
-Start by reading RESEARCH_LOG.md and QUESTIONS.md, then survey the codebase and prior experiments." \
+Start by reading $_SD/RESEARCH_LOG.md and $_SD/QUESTIONS.md, then survey the codebase and prior experiments." \
     --allowed-tools "Read,Bash,Glob,Grep,Write" \
     -p "Survey the current state of knowledge on: $question" \
     > "$EXP_LOG_DIR/survey.log" 2>&1 || exit_code=$?
@@ -413,13 +416,13 @@ run_frame() {
 - Results directory: $RESULTS_DIR
 - Existing experiments: $(list_experiment_specs | wc -l | tr -d ' ') spec(s) in $EXPERIMENTS_DIR (use Glob to discover)
 - Existing results: $(list_result_dirs | wc -l | tr -d ' ') result dir(s) in $RESULTS_DIR (use Glob to discover)
-- Research log: RESEARCH_LOG.md
+- Research log: $_SD/RESEARCH_LOG.md
 - Train command: $TRAIN_CMD
 - Eval command: $EVAL_CMD
 - Max GPU hours budget: $MAX_GPU_HOURS
 - Max runs budget: $MAX_RUNS
 
-Read the RESEARCH_LOG.md and any survey output first, then design the experiment." \
+Read the $_SD/RESEARCH_LOG.md and any survey output first, then design the experiment." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
     -p "Design the experiment and write the spec to $spec_file" \
     > "$EXP_LOG_DIR/frame.log" 2>&1 || exit_code=$?
@@ -533,7 +536,7 @@ run_read() {
 - Experiment spec: $spec_file
 - Results directory: $results_path
 - Metrics file: $results_path/metrics.json (READ-ONLY -- these are the ground truth numbers)
-- Research log: RESEARCH_LOG.md
+- Research log: $_SD/RESEARCH_LOG.md
 - Previous experiments: $(list_experiment_specs | wc -l | tr -d ' ') spec(s) in $EXPERIMENTS_DIR (use Glob to discover)
 - Previous results: $(list_result_dirs | wc -l | tr -d ' ') result dir(s) in $RESULTS_DIR (use Glob to discover)
 
@@ -688,7 +691,7 @@ run_synthesize() {
   local analysis_files
   analysis_files=$(find "$RESULTS_DIR" -name "analysis.md" -type f 2>/dev/null | wc -l | tr -d ' ')
   local completed_handoffs
-  completed_handoffs=$(find handoffs/completed -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+  completed_handoffs=$(find "$_SD/handoffs/completed" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
   local state_info="N/A"
   if [[ -f "${PROGRAM_STATE_FILE:-program_state.json}" ]]; then
     state_info="${PROGRAM_STATE_FILE:-program_state.json}"
@@ -703,16 +706,16 @@ run_synthesize() {
 
 ## Context
 - Trigger reason: $trigger
-- Research questions: QUESTIONS.md
-- Research log: RESEARCH_LOG.md
+- Research questions: $_SD/QUESTIONS.md
+- Research log: $_SD/RESEARCH_LOG.md
 - Analysis files: ${analysis_files:-0} file(s) in $RESULTS_DIR/*/analysis.md (use Glob to discover)
-- Completed handoffs: ${completed_handoffs:-0} file(s) in handoffs/completed/ (use Glob to discover)
+- Completed handoffs: ${completed_handoffs:-0} file(s) in $_SD/handoffs/completed/ (use Glob to discover)
 - Program state: $state_info
 - Results directory: $RESULTS_DIR
 
-Read RESEARCH_LOG.md for summaries first. Use Glob to discover analysis files, then selectively read those you need detail on." \
+Read $_SD/RESEARCH_LOG.md for summaries first. Use Glob to discover analysis files, then selectively read those you need detail on." \
     --allowed-tools "Read,Write,Glob,Grep" \
-    -p "Synthesize all experiment results into SYNTHESIS.md. Trigger: $trigger" \
+    -p "Synthesize all experiment results into $_SD/SYNTHESIS.md. Trigger: $trigger" \
     > "$EXP_LOG_DIR/synthesize.log" 2>&1 || exit_code=$?
 
   _phase_summary "synthesize" "$exit_code"
@@ -726,7 +729,7 @@ Read RESEARCH_LOG.md for summaries first. Use Glob to discover analysis files, t
 MAX_PROGRAM_CYCLES="${MAX_PROGRAM_CYCLES:-10}"
 MAX_PROGRAM_GPU_HOURS="${MAX_PROGRAM_GPU_HOURS:-40}"
 INCONCLUSIVE_THRESHOLD="${INCONCLUSIVE_THRESHOLD:-3}"
-PROGRAM_STATE_FILE="${PROGRAM_STATE_FILE:-program_state.json}"
+PROGRAM_STATE_FILE="${PROGRAM_STATE_FILE:-${_SD}/program_state.json}"
 
 init_program_state() {
   if [[ ! -f "$PROGRAM_STATE_FILE" ]]; then
@@ -797,7 +800,7 @@ except (FileNotFoundError, json.JSONDecodeError):
 
 # Parse QUESTIONS.md
 try:
-    with open('QUESTIONS.md') as f:
+    with open('$_SD/QUESTIONS.md') as f:
         content = f.read()
 except FileNotFoundError:
     sys.exit(1)
@@ -970,7 +973,7 @@ with open('$PROGRAM_STATE_FILE') as f:
     echo -e "${CYAN}── Cycle check (completed: $cycles_completed, GPU hours: $gpu_hours_used) ──${NC}"
 
     # ── Termination check 1: HANDOFF.md exists ──
-    if [[ -f HANDOFF.md ]]; then
+    if [[ -f "$_SD/HANDOFF.md" ]]; then
       echo -e "${YELLOW}HANDOFF.md exists — program loop paused.${NC}"
       echo -e "Resolve the handoff and run: ${BOLD}./experiment.sh complete-handoff${NC}"
       echo -e "Then resume: ${BOLD}./experiment.sh program${NC}"
@@ -1132,7 +1135,7 @@ case "${1:-help}" in
   synthesize)        shift; run_synthesize "${1:-manual}" ;;
   complete-handoff)  shift; complete_handoff "$@" ;;
   validate-handoff)  shift; validate_handoff "$@" ;;
-  watch)             shift; python3 scripts/experiment-watch.py "$@" ;;
+  watch)             shift; python3 "$_SD/scripts/experiment-watch.py" "$@" ;;
   help|*)
     echo "Usage: experiment.sh <phase> [args]"
     echo ""

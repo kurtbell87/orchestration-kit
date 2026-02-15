@@ -22,6 +22,9 @@ SRC_DIR="${SRC_DIR:-src}"                        # Source/implementation directo
 PROMPT_DIR="${PROMPT_DIR:-.claude/prompts}"      # Phase-specific prompt files
 HOOK_DIR="${HOOK_DIR:-.claude/hooks}"            # Hook scripts
 
+# Kit state directory — greenfield sets KIT_STATE_DIR=".kit", monorepo leaves unset.
+_SD="${KIT_STATE_DIR:-.}"
+
 # Agent backend
 # Supported values: claude, codex
 TDD_AGENT_BIN="${TDD_AGENT_BIN:-claude}"
@@ -398,7 +401,7 @@ run_green() {
 - Source directory: $SRC_DIR
 - Test directories: $TEST_DIRS (READ-ONLY -- do not attempt to modify)
 - Build command: $BUILD_CMD
-- Test command: ./scripts/test-summary.sh $TEST_CMD
+- Test command: ./$_SD/scripts/test-summary.sh $TEST_CMD
 - Full test log: $TDD_LOG_DIR/test-output.log (Read this file for detailed failure tracebacks)
 - Test files: $(find_test_files | wc -l | tr -d ' ') file(s) in $TEST_DIRS (use Glob to discover)
 
@@ -433,7 +436,7 @@ run_refactor() {
 - Source directory: $SRC_DIR
 - Test directories: $TEST_DIRS
 - Build command: $BUILD_CMD
-- Test command: ./scripts/test-summary.sh $TEST_CMD
+- Test command: ./$_SD/scripts/test-summary.sh $TEST_CMD
 - Full test log: $TDD_LOG_DIR/test-output.log (Read this file for detailed failure tracebacks)
 
 Start by running the full test suite to confirm your green baseline, then refactor. Always use the test command above — it prints a compact summary."
@@ -483,7 +486,7 @@ run_breadcrumbs() {
 - Source directory: $SRC_DIR
 - Test directories: $TEST_DIRS
 - Build command: $BUILD_CMD
-- Test command: ./scripts/test-summary.sh $TEST_CMD
+- Test command: ./$_SD/scripts/test-summary.sh $TEST_CMD
 - Full test log: $TDD_LOG_DIR/test-output.log (Read this file for detailed failure tracebacks)
 - Files changed in this cycle:
 $changed_files
@@ -491,7 +494,7 @@ $changed_files
 Read the spec and update breadcrumb files with accurate status/counts."
 
   local user_prompt
-  user_prompt="Read the spec and update CLAUDE.md, AGENTS.md, LAST_TOUCH.md, and affected directory README.md files before shipping."
+  user_prompt="Read the spec and update CLAUDE.md, AGENTS.md, $_SD/LAST_TOUCH.md, and affected directory README.md files before shipping."
 
   run_agent "breadcrumbs" "$system_prompt" "$user_prompt" "Read,Write,Edit,Bash,Glob,Grep" || exit_code=$?
 
@@ -627,7 +630,7 @@ case "${1:-help}" in
   breadcrumbs) shift; run_breadcrumbs "$@" ;;
   ship)     shift; run_ship "$@" ;;
   full)     shift; run_full "$@" ;;
-  watch)    shift; python3 scripts/tdd-watch.py "$@" ;;
+  watch)    shift; python3 "$_SD/scripts/tdd-watch.py" "$@" ;;
   help|*)
     echo "Usage: tdd.sh <phase> [args]"
     echo ""

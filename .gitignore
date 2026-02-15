@@ -20,3 +20,6 @@ interop/responses/*.json
 !runs/mcp-logs/
 runs/mcp-logs/*
 !runs/mcp-logs/.gitkeep
+
+# python artifacts
+**__pycache__**

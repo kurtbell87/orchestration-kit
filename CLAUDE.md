@@ -10,17 +10,46 @@ A monorepo orchestrator wrapping three domain kits. You drive them through `tool
 | **Research** | `claude-research-kit/` | survey, frame, run, read, log, cycle, full, program, status |
 | **Math** | `claude-mathematics-kit/` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
 
+## Greenfield Setup (REQUIRED before first run)
+
+When using master-kit from a parent project directory (greenfield mode), you **must run the installer first** to symlink kit scripts (`tdd.sh`, `experiment.sh`, `math.sh`) into the project root. Without this, `tools/kit` will fail with `FileNotFoundError: ./tdd.sh`.
+
+```bash
+cd <project-root> && echo "n" | ./master-kit/install.sh --skip-smoke
+source .master-kit.env
+```
+
+This only needs to run once per project. It creates symlinks, deploys `.claude/` prompts/hooks, and writes `.master-kit.env`.
+
+## Environment: Nested Session Guard
+
+`tools/kit plan`, `tools/kit seed`, and `tools/kit execute` spawn `claude --print` as subprocesses. When running inside a Claude Code session, the `CLAUDECODE` env var blocks nested launches. **You must clear it** in every `tools/kit` invocation that triggers sub-agent LLM calls:
+
+```bash
+CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit plan ...
+CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit seed ...
+CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit execute ...
+```
+
+Direct phase runs (`tools/kit tdd red ...`) also spawn `claude` sub-agents, so the same rule applies:
+
+```bash
+CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit --json tdd red docs/my-feature.md
+```
+
+**Always run these commands in the background** (use `run_in_background: true` on Bash tool calls) and check exit codes only. Do not pull stdout into your context window.
+
 ## How to Run Phases
 
 ```bash
-tools/kit --json <kit> <phase> [args...]
+CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit --json <kit> <phase> [args...]
 ```
 
 Examples:
 ```bash
-tools/kit --json tdd red docs/my-feature.md
-tools/kit --json research status
-tools/kit --json math survey specs/my-construction.md
+CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json tdd red docs/my-feature.md
+CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json research status
+CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json math survey specs/my-construction.md
 ```
 
 Each run produces artifacts under `runs/<run_id>/`:

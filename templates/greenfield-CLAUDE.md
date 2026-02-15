@@ -1,12 +1,19 @@
 # Project Instructions — Master-Kit (Greenfield)
 
+## Path Convention
+
+Kit state files, working directories, and utility scripts live in `.kit/`. Project source code (`src/`, `tests/`, etc.) stays at the project root. The kit prompts reference bare filenames (e.g., `LAST_TOUCH.md`) — the `KIT_STATE_DIR` environment variable tells the scripts to resolve these inside `.kit/`.
+
+Files at project root: `CLAUDE.md`, `.claude/`, `.master-kit.env`, `.gitignore`
+Everything else kit-related: `.kit/`
+
 ## Available Kits
 
 | Kit | Script | Phases |
 |-----|--------|--------|
-| **TDD** | `./tdd.sh` | red, green, refactor, ship, full, watch |
-| **Research** | `./experiment.sh` | survey, frame, run, read, log, cycle, full, program, status |
-| **Math** | `./math.sh` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
+| **TDD** | `.kit/tdd.sh` | red, green, refactor, ship, full, watch |
+| **Research** | `.kit/experiment.sh` | survey, frame, run, read, log, cycle, full, program, status |
+| **Math** | `.kit/math.sh` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
 
 ## Orchestrator (Advanced)
 
@@ -40,22 +47,22 @@ master-kit/tools/dashboard serve --host 127.0.0.1 --port 7340
 
 Open `http://127.0.0.1:7340` to explore runs across projects and filter by project.
 
-## State Files (at project root)
+## State Files (in `.kit/`)
 
 | Kit | Read first |
 |-----|-----------|
-| TDD | `CLAUDE.md` → `LAST_TOUCH.md` → `PRD.md` |
-| Research | `CLAUDE.md` → `RESEARCH_LOG.md` → `QUESTIONS.md` |
-| Math | `CLAUDE.md` → `CONSTRUCTION_LOG.md` → `CONSTRUCTIONS.md` |
+| TDD | `CLAUDE.md` → `.kit/LAST_TOUCH.md` → `.kit/PRD.md` |
+| Research | `CLAUDE.md` → `.kit/RESEARCH_LOG.md` → `.kit/QUESTIONS.md` |
+| Math | `CLAUDE.md` → `.kit/CONSTRUCTION_LOG.md` → `.kit/CONSTRUCTIONS.md` |
 
 ## Working Directories
 
-- `docs/` — TDD specs
-- `experiments/` — Research experiment specs
-- `results/` — Research + Math results
-- `specs/` — Math specification documents
-- `handoffs/completed/` — Resolved research handoffs
-- `scripts/` — Utility scripts (symlinked from master-kit)
+- `.kit/docs/` — TDD specs
+- `.kit/experiments/` — Research experiment specs
+- `.kit/results/` — Research + Math results
+- `.kit/specs/` — Math specification documents
+- `.kit/handoffs/completed/` — Resolved research handoffs
+- `.kit/scripts/` — Utility scripts (symlinked from master-kit)
 
 ## Don't
 
@@ -71,7 +78,7 @@ You are the orchestrator. Sub-agents do the work. Your job is to sequence phases
 
 1. **Run phases in background, check only the exit code.** Do not read the TaskOutput content — the JSON blob wastes context. Check `status: completed/failed` and `exit_code` only.
 2. **Never run Bash for verification.** No `pytest`, `lake build`, `ls`, `cat`, `grep` to check what a sub-agent produced. If the phase exited 0, it worked.
-3. **Never read implementation files** the sub-agents wrote (source code, test files, .lean files, experiment scripts). That is their domain. You read only state files (CLAUDE.md, LAST_TOUCH.md, RESEARCH_LOG.md, etc.).
+3. **Never read implementation files** the sub-agents wrote (source code, test files, .lean files, experiment scripts). That is their domain. You read only state files (CLAUDE.md, `.kit/LAST_TOUCH.md`, `.kit/RESEARCH_LOG.md`, etc.).
 4. **Chain phases by exit code only.** Exit 0 → next phase. Exit 1 → read the capsule (not the log), decide whether to retry or stop.
 5. **Never read capsules after success.** Capsules exist for failure diagnosis and interop handoffs. A successful phase needs no capsule read.
 6. **Minimize tool calls.** Each Bash call, Read, or Glob adds to your context. If the information isn't needed to decide the next action, don't fetch it.
@@ -80,9 +87,9 @@ You are the orchestrator. Sub-agents do the work. Your job is to sequence phases
 
 After every session that changes the codebase, update:
 
-1. **`LAST_TOUCH.md`** — Current state and what to do next (TDD).
-2. **`RESEARCH_LOG.md`** — Append experiment results (Research).
-3. **`CONSTRUCTION_LOG.md`** — Progress notes (Math).
+1. **`.kit/LAST_TOUCH.md`** — Current state and what to do next (TDD).
+2. **`.kit/RESEARCH_LOG.md`** — Append experiment results (Research).
+3. **`.kit/CONSTRUCTION_LOG.md`** — Progress notes (Math).
 4. **This file's "Current State" section** — Keep it current.
 
 ## Current State (updated YYYY-MM-DD)

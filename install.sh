@@ -268,56 +268,136 @@ run_greenfield_install() {
 
   # ── Step 3: Symlink kit entry scripts + utility scripts ────────────────────
 
-  echo "[install] linking kit scripts"
+  KIT_DIR="$PROJECT_ROOT/.kit"
+  mkdir -p "$KIT_DIR"
 
-  link_rel "$MASTER_KIT_ROOT/claude-tdd-kit/tdd.sh"               "$PROJECT_ROOT/tdd.sh"
-  link_rel "$MASTER_KIT_ROOT/claude-research-kit/experiment.sh"    "$PROJECT_ROOT/experiment.sh"
-  link_rel "$MASTER_KIT_ROOT/claude-mathematics-kit/math.sh"       "$PROJECT_ROOT/math.sh"
+  echo "[install] linking kit scripts into .kit/"
 
-  mkdir -p "$PROJECT_ROOT/scripts"
+  link_rel "$MASTER_KIT_ROOT/claude-tdd-kit/tdd.sh"               "$KIT_DIR/tdd.sh"
+  link_rel "$MASTER_KIT_ROOT/claude-research-kit/experiment.sh"    "$KIT_DIR/experiment.sh"
+  link_rel "$MASTER_KIT_ROOT/claude-mathematics-kit/math.sh"       "$KIT_DIR/math.sh"
+
+  mkdir -p "$KIT_DIR/scripts"
 
   for script in "$MASTER_KIT_ROOT"/claude-tdd-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
-    link_rel "$script" "$PROJECT_ROOT/scripts/$name"
+    link_rel "$script" "$KIT_DIR/scripts/$name"
   done
 
   for script in "$MASTER_KIT_ROOT"/claude-research-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
-    link_rel "$script" "$PROJECT_ROOT/scripts/$name"
+    link_rel "$script" "$KIT_DIR/scripts/$name"
   done
 
   for script in "$MASTER_KIT_ROOT"/claude-mathematics-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
-    link_rel "$script" "$PROJECT_ROOT/scripts/$name"
+    link_rel "$script" "$KIT_DIR/scripts/$name"
   done
 
   echo "[install]   utility scripts linked"
 
   # ── Step 4: Copy state templates + create working dirs ─────────────────────
 
-  echo "[install] seeding state files and working dirs"
+  echo "[install] seeding state files and working dirs into .kit/"
 
   # TDD
-  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/LAST_TOUCH.md" "$PROJECT_ROOT/LAST_TOUCH.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/PRD.md"        "$PROJECT_ROOT/PRD.md"
-  mkdir -p "$PROJECT_ROOT/docs"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/LAST_TOUCH.md" "$KIT_DIR/LAST_TOUCH.md"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/PRD.md"        "$KIT_DIR/PRD.md"
+  mkdir -p "$KIT_DIR/docs"
 
   # Research
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/RESEARCH_LOG.md"  "$PROJECT_ROOT/RESEARCH_LOG.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/QUESTIONS.md"      "$PROJECT_ROOT/QUESTIONS.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/DOMAIN_PRIORS.md" "$PROJECT_ROOT/DOMAIN_PRIORS.md"
-  mkdir -p "$PROJECT_ROOT/experiments" "$PROJECT_ROOT/results" "$PROJECT_ROOT/handoffs/completed"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/RESEARCH_LOG.md"  "$KIT_DIR/RESEARCH_LOG.md"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/QUESTIONS.md"      "$KIT_DIR/QUESTIONS.md"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/DOMAIN_PRIORS.md" "$KIT_DIR/DOMAIN_PRIORS.md"
+  mkdir -p "$KIT_DIR/experiments" "$KIT_DIR/results" "$KIT_DIR/handoffs/completed"
 
   # Math
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTIONS.md"     "$PROJECT_ROOT/CONSTRUCTIONS.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTION_LOG.md"  "$PROJECT_ROOT/CONSTRUCTION_LOG.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/DOMAIN_CONTEXT.md"    "$PROJECT_ROOT/DOMAIN_CONTEXT.md"
-  mkdir -p "$PROJECT_ROOT/specs"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTIONS.md"     "$KIT_DIR/CONSTRUCTIONS.md"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTION_LOG.md"  "$KIT_DIR/CONSTRUCTION_LOG.md"
+  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/DOMAIN_CONTEXT.md"    "$KIT_DIR/DOMAIN_CONTEXT.md"
+  mkdir -p "$KIT_DIR/specs"
 
   echo "[install]   state files seeded"
+
+  # ── Step 4b: Create .gitignore ─────────────────────────────────────────────
+
+  if [[ ! -f "$PROJECT_ROOT/.gitignore" ]]; then
+    cat > "$PROJECT_ROOT/.gitignore" <<'GITIGNORE'
+# Secrets & credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# Master-kit runtime
+.master-kit.env
+.mcp-token
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+
+# Kit runtime artifacts
+.kit/scripts/
+.kit/tdd.sh
+.kit/experiment.sh
+.kit/math.sh
+GITIGNORE
+    echo "[install]   created .gitignore"
+  else
+    echo "[install]   .gitignore already exists, skipping"
+  fi
+
+  # ── Step 4c: Print LLM instructions for generated state files ──────────────
+
+  echo ""
+  echo "[install] === State File Instructions ==="
+  echo ""
+  echo "  .kit/PRD.md"
+  echo "    → Fill in: project goal, success criteria, build phases, data contract."
+  echo "    → Why: The TDD kit reads this to understand what to build and test."
+  echo ""
+  echo "  .kit/LAST_TOUCH.md"
+  echo "    → Fill in: current phase, what was just done, what to do next."
+  echo "    → Why: Continuity across sessions — every agent reads this first."
+  echo ""
+  echo "  .kit/DOMAIN_PRIORS.md"
+  echo "    → Fill in: domain knowledge the research kit should assume (schemas, constants, gotchas)."
+  echo "    → Why: Prevents the research agent from re-discovering known domain facts."
+  echo ""
+  echo "  .kit/RESEARCH_LOG.md, .kit/QUESTIONS.md"
+  echo "    → Leave empty — auto-populated by the research kit's cycle."
+  echo ""
+  echo "  .kit/CONSTRUCTIONS.md, .kit/CONSTRUCTION_LOG.md, .kit/DOMAIN_CONTEXT.md"
+  echo "    → Leave empty unless using the math kit."
+  echo ""
 
   # ── Step 5: Generate combined CLAUDE.md ────────────────────────────────────
 
@@ -353,6 +433,7 @@ MCPENV
     cat > "$env_file" <<ENV
 export PROJECT_ROOT="$PROJECT_ROOT"
 export MASTER_KIT_ROOT="$MASTER_KIT_ROOT"
+export KIT_STATE_DIR=".kit"
 ${mcp_vars}
 ENV
     chmod 600 "$env_file"
