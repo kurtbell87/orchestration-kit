@@ -248,6 +248,7 @@ Dashboard API endpoints:
 - `GET /api/runs`
 - `GET /api/run`
 - `GET /api/artifact` (project-scoped artifact fetch for dashboard viewer)
+- `GET /api/project-docs` (state file listing per project)
 - `POST /api/refresh`
 
 ### Query logs without large reads
