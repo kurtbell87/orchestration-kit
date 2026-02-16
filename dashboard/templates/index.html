@@ -391,6 +391,92 @@
     .log-error { color: var(--bad); }
     .log-warn { color: var(--warn); }
 
+    /* Capsule hover popover */
+    .capsule-popover {
+      display: none;
+      position: fixed;
+      z-index: 100;
+      max-width: 480px;
+      max-height: 220px;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .capsule-popover.visible { display: block; }
+    .capsule-popover-title {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 6px;
+    }
+    .capsule-popover-body {
+      overflow: hidden;
+      max-height: 180px;
+      line-height: 1.45;
+    }
+    .capsule-popover-body .markdown { font-size: 11px; }
+    .capsule-popover-fade {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 30px;
+      background: linear-gradient(transparent, var(--panel));
+    }
+
+    /* Light theme */
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel-2: #f1f5f9;
+      --line: #e2e8f0;
+      --text: #1e293b;
+      --muted: #64748b;
+      --ok: #16a34a;
+      --bad: #dc2626;
+      --warn: #d97706;
+      --accent: #0284c7;
+      --stale: #9333ea;
+    }
+    [data-theme="light"] body {
+      background: radial-gradient(circle at top right, #e2e8f0, var(--bg) 55%);
+    }
+    [data-theme="light"] .markdown code {
+      background: rgba(0, 0, 0, 0.05);
+    }
+    [data-theme="light"] .markdown pre {
+      background: #f1f5f9;
+    }
+    [data-theme="light"] .expansion-content {
+      background: rgba(241, 245, 249, 0.8);
+    }
+    [data-theme="light"] .json-str { color: #16a34a; }
+    [data-theme="light"] .json-num { color: #d97706; }
+    [data-theme="light"] .badge-ok { background: rgba(22, 163, 74, 0.1); color: #16a34a; }
+    [data-theme="light"] .badge-failed { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
+    [data-theme="light"] .badge-running { background: rgba(217, 119, 6, 0.1); color: #d97706; }
+    [data-theme="light"] .badge-stale { background: rgba(147, 51, 234, 0.1); color: #9333ea; }
+    [data-theme="light"] .runs-table tbody tr.run-row:hover { background: rgba(226, 232, 240, 0.5); }
+    [data-theme="light"] .capsule-popover { box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+    [data-theme="light"] .capsule-popover-fade { background: linear-gradient(transparent, var(--panel)); }
+    [data-theme="light"] .dag-legend { background: rgba(255,255,255,0.95); }
+    .theme-toggle {
+      cursor: pointer;
+      background: var(--panel-2) !important;
+      border-color: var(--line) !important;
+      font-weight: 500 !important;
+      font-size: 16px !important;
+      padding: 4px 8px !important;
+      line-height: 1;
+    }
+
     @media (max-width: 900px) {
       .expansion-content { grid-template-columns: 1fr; }
       .docs-layout { flex-direction: column; }
@@ -422,8 +508,16 @@
     </label>
     <button id="refresh-index">Reindex</button>
     <button id="reload" class="secondary">Reload</button>
+    <button id="theme-toggle" class="theme-toggle" title="Toggle light/dark theme"></button>
     <div class="cards" id="cards"></div>
     <span id="stamp"></span>
+  </div>
+
+  <!-- Capsule hover popover -->
+  <div class="capsule-popover" id="capsule-popover">
+    <div class="capsule-popover-title">Capsule Preview</div>
+    <div class="capsule-popover-body markdown" id="capsule-popover-body"></div>
+    <div class="capsule-popover-fade"></div>
   </div>
 
   <!-- Tab bar -->
@@ -1070,6 +1164,56 @@ const RunsView = {
 
     el('runs-prev').addEventListener('click', () => this.prevPage());
     el('runs-next').addEventListener('click', () => this.nextPage());
+
+    // Capsule hover preview
+    this._capsuleCache = {};
+    this._hoverTimer = null;
+    const popover = el('capsule-popover');
+    const popBody = el('capsule-popover-body');
+
+    el('runs-tbody').addEventListener('mouseenter', (e) => {
+      const row = e.target.closest('.run-row');
+      if (!row) return;
+      const rid = row.dataset.runId;
+      const pid = row.dataset.projectId;
+      if (!rid || !pid) return;
+      if (this.expandedRunId === rid) return; // already expanded, skip
+
+      clearTimeout(this._hoverTimer);
+      this._hoverTimer = setTimeout(async () => {
+        const rect = row.getBoundingClientRect();
+        popover.style.left = Math.min(rect.left + 40, window.innerWidth - 500) + 'px';
+        popover.style.top = Math.max(rect.bottom + 4, 0) + 'px';
+
+        if (this._capsuleCache[rid]) {
+          popBody.innerHTML = this._capsuleCache[rid];
+          popover.classList.add('visible');
+          return;
+        }
+
+        try {
+          const data = await api('/api/capsule-preview?' + qs({ project_id: pid, run_id: rid }));
+          if (data.capsule && data.capsule.text) {
+            const html = renderMarkdown(data.capsule.text);
+            this._capsuleCache[rid] = html;
+            // Only show if still hovering this row
+            const still = el('runs-tbody').querySelector('.run-row:hover');
+            if (still && still.dataset.runId === rid) {
+              popBody.innerHTML = html;
+              popover.classList.add('visible');
+            }
+          }
+        } catch (_) {}
+      }, 350);
+    }, true);
+
+    el('runs-tbody').addEventListener('mouseleave', (e) => {
+      const row = e.target.closest('.run-row');
+      if (row) {
+        clearTimeout(this._hoverTimer);
+        popover.classList.remove('visible');
+      }
+    }, true);
   }
 };
 
@@ -1261,8 +1405,34 @@ async function safeRefresh(fn) {
   }
 }
 
+/* ─── Theme ─── */
+const Theme = {
+  _key: 'orch-dashboard-theme',
+  init() {
+    const saved = localStorage.getItem(this._key) || 'dark';
+    this.apply(saved);
+    el('theme-toggle').addEventListener('click', () => {
+      const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      this.apply(next);
+      localStorage.setItem(this._key, next);
+    });
+  },
+  apply(theme) {
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+      el('theme-toggle').textContent = '\u263E'; // moon
+      el('theme-toggle').title = 'Switch to dark theme';
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      el('theme-toggle').textContent = '\u2600'; // sun
+      el('theme-toggle').title = 'Switch to light theme';
+    }
+  }
+};
+
 /* ─── Boot ─── */
 (async function boot() {
+  Theme.init();
   TabManager.init();
   RunsView.init();
   DocsView.init();
