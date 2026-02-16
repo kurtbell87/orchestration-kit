@@ -28,8 +28,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = Path(os.environ["PROJECT_ROOT"]) if os.environ.get("PROJECT_ROOT") else None
-RUNS_DIR = REPO_ROOT / "runs"
-INTEROP_REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
+# When ORCHESTRATION_KIT_ROOT is set (greenfield), store runs in the project's
+# orchestration-kit clone rather than this source repo.
+_OK_ROOT = Path(os.environ["ORCHESTRATION_KIT_ROOT"]) if os.environ.get("ORCHESTRATION_KIT_ROOT") else REPO_ROOT
+RUNS_DIR = _OK_ROOT / "runs"
+INTEROP_REQUESTS_DIR = _OK_ROOT / "interop" / "requests"
 DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
 PROMPTS_DIR = REPO_ROOT / ".claude" / "prompts"
 

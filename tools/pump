@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REQUESTS_DIR = REPO_ROOT / "interop" / "requests"
-RESPONSES_DIR = REPO_ROOT / "interop" / "responses"
-RUNS_DIR = REPO_ROOT / "runs"
+_OK_ROOT = Path(os.environ["ORCHESTRATION_KIT_ROOT"]) if os.environ.get("ORCHESTRATION_KIT_ROOT") else REPO_ROOT
+REQUESTS_DIR = _OK_ROOT / "interop" / "requests"
+RESPONSES_DIR = _OK_ROOT / "interop" / "responses"
+RUNS_DIR = _OK_ROOT / "runs"
 DASHBOARD_TOOL = REPO_ROOT / "tools" / "dashboard"
 
 
