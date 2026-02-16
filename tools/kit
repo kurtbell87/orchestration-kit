@@ -593,6 +593,8 @@ def run_phase(argv: list[str]) -> int:
 
     cmd = [script, args.phase] + args.phase_args
     env = os.environ.copy()
+    # Allow nested Claude Code sessions (sub-agents spawned by kit scripts).
+    env.pop("CLAUDECODE", None)
     env.update(
         {
             "RUN_ID": run_id,

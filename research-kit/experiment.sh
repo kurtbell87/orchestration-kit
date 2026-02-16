@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# Allow nested Claude Code sessions (sub-agents spawned by orchestrator).
+unset CLAUDECODE 2>/dev/null || true
+
 # ──────────────────────────────────────────────────────────────
 # Configuration -- edit these to match your project
 # ──────────────────────────────────────────────────────────────
