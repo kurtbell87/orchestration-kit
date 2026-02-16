@@ -134,7 +134,7 @@ lock_previous_results() {
 unlock_all() {
   # Restore write permissions on everything
   if [[ -d "$RESULTS_DIR" ]]; then
-    find "$RESULTS_DIR" -type f \( -name "*.json" -o -name "*.csv" \) -exec chmod 644 {} \; 2>/dev/null || true
+    find "$RESULTS_DIR" -type f \( -name "*.json" -o -name "*.csv" -o -name "*.md" \) -exec chmod 644 {} \; 2>/dev/null || true
     find "$RESULTS_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
   fi
   for f in "$EXPERIMENTS_DIR"/*.md; do
@@ -467,6 +467,8 @@ run_run() {
   trap unlock_all EXIT
 
   # Freeze the spec into the results directory for reproducibility
+  # (remove existing locked copy from a previous run if present)
+  [[ -f "$results_path/spec.md" ]] && chmod 644 "$results_path/spec.md" 2>/dev/null || true
   cp "$spec_file" "$results_path/spec.md"
   chmod 444 "$results_path/spec.md"
 
