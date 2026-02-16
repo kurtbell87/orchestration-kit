@@ -941,14 +941,15 @@ Axiom count: $(check_axioms)
 
 SURVEY -> SPECIFY -> CONSTRUCT -> FORMALIZE -> PROVE -> POLISH -> AUDIT complete."
 
-  # Push and create PR
-  git push -u origin "$branch"
+  # Push and create PR (skip if no remote)
+  if git remote get-url origin &>/dev/null; then
+    git push -u origin "$branch"
 
-  local pr_url
-  pr_url=$(gh pr create \
-    --base "$MATH_BASE_BRANCH" \
-    --title "math(${cid}): formally verified construction" \
-    --body "$(cat <<EOF
+    local pr_url
+    pr_url=$(gh pr create \
+      --base "$MATH_BASE_BRANCH" \
+      --title "math(${cid}): formally verified construction" \
+      --body "$(cat <<EOF
 ## Construction: ${cid}
 
 **Spec:** \`${spec_file}\`
@@ -973,24 +974,28 @@ SURVEY -> SPECIFY -> CONSTRUCT -> FORMALIZE -> PROVE -> POLISH -> AUDIT complete
 EOF
 )")
 
-  echo -e "  ${GREEN}PR created:${NC} $pr_url"
+    echo -e "  ${GREEN}PR created:${NC} $pr_url"
 
-  if [[ "$MATH_AUTO_MERGE" == "true" ]]; then
-    echo -e "  ${YELLOW}Auto-merging...${NC}"
-    gh pr merge "$pr_url" --merge
-    echo -e "  ${GREEN}Merged.${NC}"
-    git checkout "$MATH_BASE_BRANCH"
-    git pull
-    if [[ "$MATH_DELETE_BRANCH" == "true" ]]; then
-      git branch -d "$branch" 2>/dev/null || true
-      echo -e "  ${GREEN}Branch deleted.${NC}"
+    if [[ "$MATH_AUTO_MERGE" == "true" ]]; then
+      echo -e "  ${YELLOW}Auto-merging...${NC}"
+      gh pr merge "$pr_url" --merge
+      echo -e "  ${GREEN}Merged.${NC}"
+      git checkout "$MATH_BASE_BRANCH"
+      git pull
+      if [[ "$MATH_DELETE_BRANCH" == "true" ]]; then
+        git branch -d "$branch" 2>/dev/null || true
+        echo -e "  ${GREEN}Branch deleted.${NC}"
+      fi
     fi
-  fi
 
-  echo ""
-  echo -e "${GREEN}======================================================${NC}"
-  echo -e "${GREEN}  Logged! PR: $pr_url${NC}"
-  echo -e "${GREEN}======================================================${NC}"
+    echo ""
+    echo -e "${GREEN}======================================================${NC}"
+    echo -e "${GREEN}  Logged! PR: $pr_url${NC}"
+    echo -e "${GREEN}======================================================${NC}"
+  else
+    echo -e "  ${YELLOW}No git remote 'origin' configured — skipping push and PR.${NC}"
+    echo -e "  ${GREEN}Changes committed locally on branch:${NC} $branch"
+  fi
 }
 
 # ──────────────────────────────────────────────────────────────
