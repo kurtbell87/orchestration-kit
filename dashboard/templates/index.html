@@ -275,6 +275,22 @@
     }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     .dag-node circle.running { animation: pulse 1.5s ease-in-out infinite; }
+    .dag-legend {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .dag-legend-title { font-weight: 600; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 2px; }
+    .dag-legend-item { display: flex; align-items: center; gap: 8px; }
+    .dag-legend-line { width: 28px; height: 0; border-top-width: 2px; border-top-style: solid; flex-shrink: 0; }
 
     /* Docs layout */
     .docs-layout { display: flex; flex: 1; overflow: hidden; }
@@ -351,6 +367,15 @@
     }
     .markdown tbody tr:hover {
       background: rgba(30, 41, 59, 0.3);
+    }
+    .markdown hr {
+      border: none;
+      border-top: 1px solid var(--line);
+      margin: 0.8em 0;
+    }
+    .markdown del {
+      color: var(--muted);
+      text-decoration: line-through;
     }
 
     /* Utilities */
@@ -550,6 +575,7 @@ function inlineMarkdown(text) {
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>');
   return out;
 }
 
@@ -621,6 +647,7 @@ function renderMarkdown(md) {
     }
     if (tableLines.length) flushTable();
     if (!line.trim()) { closeLists(); continue; }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) { closeLists(); html.push('<hr>'); continue; }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) { closeLists(); html.push('<h'+heading[1].length+'>'+inlineMarkdown(heading[2])+'</h'+heading[1].length+'>'); continue; }
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
@@ -715,7 +742,17 @@ function renderDag(data) {
   }
 
   svg += '</svg>';
-  area.innerHTML = svg;
+  area.innerHTML = svg
+    + '<div class="dag-legend">'
+    + '<div class="dag-legend-title">Edges</div>'
+    + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#475569"></span> Parent</div>'
+    + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#0ea5e9;border-top-style:dashed"></span> Interop</div>'
+    + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#6366f1;border-top-style:dashed"></span> Inferred</div>'
+    + '<div class="dag-legend-title" style="margin-top:4px">Status</div>'
+    + '<div class="dag-legend-item"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e"></span> OK</div>'
+    + '<div class="dag-legend-item"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444"></span> Failed</div>'
+    + '<div class="dag-legend-item"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b"></span> Running</div>'
+    + '</div>';
 
   area.querySelectorAll('.dag-node').forEach(g => {
     g.addEventListener('click', () => {
@@ -1138,6 +1175,21 @@ const DocsView = {
     }
   },
 
+  _autoRefreshId: null,
+
+  startAutoRefresh() {
+    this.stopAutoRefresh();
+    this._autoRefreshId = setInterval(() => {
+      if (TabManager.active === 'docs' && this.path && this.projectId) {
+        safeRefresh(() => this.loadContent());
+      }
+    }, 15000);
+  },
+
+  stopAutoRefresh() {
+    if (this._autoRefreshId) { clearInterval(this._autoRefreshId); this._autoRefreshId = null; }
+  },
+
   init() {
     el('docs-nav').addEventListener('click', async (e) => {
       const btn = e.target.closest('.docs-nav-item');
@@ -1154,6 +1206,7 @@ const DocsView = {
       }
       await safeRefresh(() => this.loadContent());
     });
+    this.startAutoRefresh();
   }
 };
 
@@ -1236,6 +1289,24 @@ async function safeRefresh(fn) {
       _prevRunning = running;
     } catch (_) {}
   }, 5000);
+
+  // Live duration counter: tick elapsed time for running runs every second
+  setInterval(() => {
+    if (TabManager.active !== 'runs') return;
+    const rows = document.querySelectorAll('.run-row');
+    rows.forEach(row => {
+      const badge = row.querySelector('.badge-running');
+      if (!badge) return;
+      const cells = row.querySelectorAll('td');
+      const startedTd = cells[4]; // Started column
+      const durationTd = cells[5]; // Duration column
+      if (!startedTd || !durationTd) return;
+      const iso = startedTd.getAttribute('title');
+      if (!iso) return;
+      const elapsed = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (elapsed >= 0) durationTd.textContent = fmtDuration(elapsed);
+    });
+  }, 1000);
 
   // Auto-reindex: periodically POST /api/refresh so stale "running" entries get updated
   let _lastReindex = Date.now();
