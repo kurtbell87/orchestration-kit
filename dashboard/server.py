@@ -18,6 +18,7 @@ from .payloads import (
     run_detail_payload,
     artifact_payload,
     project_docs_payload,
+    capsule_preview_payload,
 )
 from .dag import dag_payload
 from .indexing import maybe_seed_registry, prepare_projects, index_projects
@@ -177,6 +178,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._write_json(HTTPStatus.BAD_REQUEST, {"error": "project_id is required"})
                     return
                 payload = project_docs_payload(project_id)
+                self._write_json(HTTPStatus.OK, payload)
+                return
+
+            if route == "/api/capsule-preview":
+                query = self._query()
+                project_id = query.get("project_id")
+                run_id = query.get("run_id")
+                if not project_id or not run_id:
+                    self._write_json(HTTPStatus.BAD_REQUEST, {"error": "project_id and run_id are required"})
+                    return
+                payload = capsule_preview_payload(project_id, run_id)
                 self._write_json(HTTPStatus.OK, payload)
                 return
 

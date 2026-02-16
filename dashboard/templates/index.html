@@ -16,9 +16,9 @@
       --bad: #ef4444;
       --warn: #f59e0b;
       --accent: #0ea5e9;
+      --stale: #a855f7;
       --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      --sidebar-w: 380px;
     }
     * { box-sizing: border-box; }
     body {
@@ -43,12 +43,7 @@
       flex-shrink: 0;
       flex-wrap: wrap;
     }
-    .header h1 {
-      margin: 0;
-      font-size: 18px;
-      letter-spacing: 0.2px;
-      white-space: nowrap;
-    }
+    .header h1 { margin: 0; font-size: 18px; letter-spacing: 0.2px; white-space: nowrap; }
     .header select, .header input, .header button {
       background: var(--panel-2);
       color: var(--text);
@@ -64,20 +59,9 @@
       border-color: #1e3a8a;
       font-weight: 600;
     }
-    .header button.secondary {
-      background: var(--panel-2);
-      border-color: var(--line);
-      font-weight: 500;
-    }
-    .cards {
-      display: flex;
-      gap: 8px;
-      margin-left: auto;
-    }
-    .card {
-      text-align: center;
-      padding: 2px 10px;
-    }
+    .header button.secondary { background: var(--panel-2); border-color: var(--line); font-weight: 500; }
+    .cards { display: flex; gap: 8px; margin-left: auto; }
+    .card { text-align: center; padding: 2px 10px; }
     .card .k { color: var(--muted); font-size: 10px; text-transform: uppercase; }
     .card .v { font-size: 18px; font-weight: 700; }
     .ok { color: var(--ok); }
@@ -85,33 +69,202 @@
     .warn { color: var(--warn); }
     #stamp { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
-    /* Main layout */
-    .main {
+    /* Tab bar */
+    .tab-bar {
       display: flex;
-      flex: 1;
-      overflow: hidden;
+      gap: 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+    .tab-btn {
+      padding: 10px 20px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* Tab panels */
+    .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    .tab-panel.active { display: flex; }
+
+    /* Runs toolbar */
+    .runs-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      flex-shrink: 0;
+      background: var(--panel);
+    }
+    .runs-toolbar input {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: var(--sans);
+      font-size: 13px;
+      width: 280px;
     }
 
-    /* Left panel — DAG + run detail */
-    .left-panel {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      min-width: 0;
+    /* Runs table */
+    .runs-table-wrap { flex: 1; overflow: auto; }
+    .runs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
     }
+    .runs-table th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .runs-table th:hover { color: var(--text); }
+    .runs-table th:last-child { cursor: default; }
+    .runs-table th .sort-arrow { margin-left: 4px; font-size: 10px; }
+    .runs-table td {
+      border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+      padding: 6px 10px;
+      vertical-align: middle;
+    }
+    .runs-table tbody tr.run-row:hover { background: rgba(30, 41, 59, 0.55); cursor: pointer; }
+    .runs-table tbody tr.run-row.expanded { background: rgba(14, 165, 233, 0.06); }
+
+    /* Status badges */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .badge-ok { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+    .badge-failed { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+    .badge-running { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+    .badge-stale { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+
+    /* Expansion row */
+    .expansion-row:hover { background: transparent !important; }
+    .expansion-cell {
+      padding: 0 !important;
+      border-bottom: 1px solid var(--line) !important;
+    }
+    .expansion-content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 14px 16px;
+      border-left: 3px solid var(--accent);
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .expansion-left, .expansion-right { min-width: 0; overflow: hidden; }
+    .expansion-left h4, .expansion-right h4 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .thread-table-wrap { max-height: 140px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+    .thread-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .thread-table th, .thread-table td {
+      padding: 4px 8px;
+      text-align: left;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+    }
+    .thread-table th {
+      background: var(--panel);
+      color: var(--muted);
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+    }
+    .exp-viewer {
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    /* Pagination */
+    .runs-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 8px 16px;
+      border-top: 1px solid var(--line);
+      flex-shrink: 0;
+      background: var(--panel);
+    }
+    .runs-pagination button {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--sans);
+    }
+    .runs-pagination button:disabled { opacity: 0.4; cursor: default; }
+
+    /* Artifact buttons */
+    .artifact-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
+    .abtn {
+      padding: 2px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text);
+      cursor: pointer;
+      font-family: var(--mono);
+    }
+    .abtn:hover { background: rgba(30, 41, 59, 1); border-color: var(--accent); }
+    .exp-artifact-btn {
+      padding: 4px 10px;
+      font-size: 11px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--text);
+      cursor: pointer;
+      font-family: var(--sans);
+    }
+    .exp-artifact-btn:hover { border-color: var(--accent); }
 
     /* DAG area */
-    .dag-area {
-      flex: 1;
-      overflow: auto;
-      border-bottom: 1px solid var(--line);
-      min-height: 200px;
-      position: relative;
-    }
-    .dag-area svg {
-      display: block;
-    }
+    .dag-area { flex: 1; overflow: auto; position: relative; }
+    .dag-area svg { display: block; }
     .dag-empty {
       display: flex;
       align-items: center;
@@ -120,126 +273,50 @@
       color: var(--muted);
       font-size: 14px;
     }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .dag-node circle.running { animation: pulse 1.5s ease-in-out infinite; }
 
-    /* Run detail */
-    .detail-area {
-      height: 280px;
-      min-height: 180px;
-      overflow: auto;
-      padding: 10px 14px;
-      border-top: 1px solid var(--line);
-      background: rgba(15, 23, 42, 0.6);
+    /* Docs layout */
+    .docs-layout { display: flex; flex: 1; overflow: hidden; }
+    .docs-nav {
+      width: 240px;
       flex-shrink: 0;
-    }
-    .detail-area h3 { margin: 0 0 8px; font-size: 14px; }
-    .detail-area table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    .detail-area th, .detail-area td {
-      border-bottom: 1px solid var(--line);
-      padding: 5px 6px;
-      text-align: left;
-      vertical-align: top;
-    }
-    .detail-area th {
-      color: var(--muted);
-      font-weight: 600;
-      background: rgba(15, 23, 42, 0.55);
-      position: sticky;
-      top: 0;
-    }
-    .detail-area tbody tr:hover {
-      background: rgba(30, 41, 59, 0.55);
-      cursor: pointer;
-    }
-    .mono { font-family: var(--mono); font-size: 11px; word-break: break-all; }
-    .muted { color: var(--muted); }
-    .artifact-buttons {
-      display: flex;
-      gap: 4px;
-      flex-wrap: wrap;
-    }
-    .artifact-buttons button {
-      padding: 2px 6px;
-      font-size: 11px;
-      background: rgba(30, 41, 59, 0.7);
-      border: 1px solid var(--line);
-      border-radius: 5px;
-      color: var(--text);
-      cursor: pointer;
-    }
-
-    /* Right sidebar — doc viewer */
-    .sidebar {
-      width: var(--sidebar-w);
-      flex-shrink: 0;
-      border-left: 1px solid var(--line);
-      display: flex;
-      flex-direction: column;
+      overflow-y: auto;
+      border-right: 1px solid var(--line);
+      padding: 8px 0;
       background: var(--panel);
-      overflow: hidden;
     }
-    .sidebar-header {
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .sidebar-header h3 { margin: 0; font-size: 14px; }
-    .doc-tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-    }
-    .doc-tabs button {
-      padding: 3px 8px;
-      font-size: 11px;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 5px;
+    .docs-nav-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 6px 16px;
+      background: transparent;
+      border: none;
       color: var(--text);
+      font-size: 12px;
       cursor: pointer;
+      font-family: var(--sans);
     }
-    .doc-tabs button.active {
-      background: #1d4ed8;
-      border-color: #1e3a8a;
-    }
-    .sidebar-meta {
-      padding: 4px 12px;
+    .docs-nav-item:hover { background: rgba(30, 41, 59, 0.55); }
+    .docs-nav-item.active { background: rgba(14, 165, 233, 0.1); color: var(--accent); }
+    .docs-nav-item.template { opacity: 0.4; }
+    .docs-content-area { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+    .docs-meta {
+      padding: 8px 20px;
       color: var(--muted);
       font-size: 11px;
       border-bottom: 1px solid var(--line);
       flex-shrink: 0;
     }
-    .sidebar-body {
-      flex: 1;
-      overflow: auto;
-      padding: 10px 14px;
-    }
-    .sidebar-body.markdown {
-      font-family: var(--sans);
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .sidebar-body.markdown h1,
-    .sidebar-body.markdown h2,
-    .sidebar-body.markdown h3,
-    .sidebar-body.markdown h4,
-    .sidebar-body.markdown h5,
-    .sidebar-body.markdown h6 {
-      margin: 0.4em 0 0.35em;
-    }
-    .sidebar-body.markdown p { margin: 0.4em 0; }
-    .sidebar-body.markdown ul,
-    .sidebar-body.markdown ol {
-      margin: 0.4em 0 0.4em 1.2em;
-      padding: 0;
-    }
-    .sidebar-body.markdown code {
+    .docs-body { flex: 1; overflow-y: auto; padding: 14px 20px; }
+
+    /* Markdown rendering */
+    .markdown { font-family: var(--sans); font-size: 13px; line-height: 1.5; }
+    .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 0.4em 0 0.35em; }
+    .markdown p { margin: 0.4em 0; }
+    .markdown ul, .markdown ol { margin: 0.4em 0 0.4em 1.2em; padding: 0; }
+    .markdown code {
       font-family: var(--mono);
       font-size: 11px;
       background: rgba(2, 6, 23, 0.7);
@@ -247,7 +324,7 @@
       border-radius: 5px;
       padding: 1px 4px;
     }
-    .sidebar-body.markdown pre {
+    .markdown pre {
       margin: 0.5em 0;
       padding: 8px;
       border: 1px solid var(--line);
@@ -255,38 +332,26 @@
       overflow: auto;
       background: rgba(2, 6, 23, 0.7);
     }
-    .sidebar-body.markdown pre code {
-      border: 0;
-      padding: 0;
-      background: transparent;
-    }
-    .sidebar-body.text-view {
-      white-space: pre-wrap;
-      font-family: var(--mono);
-      font-size: 11px;
-    }
-    .run-selected {
-      outline: 1px solid var(--accent);
-      background: rgba(14, 165, 233, 0.08);
-    }
-    .doc-tabs button.template { opacity: 0.4; }
+    .markdown pre code { border: 0; padding: 0; background: transparent; }
+
+    /* Utilities */
+    .mono { font-family: var(--mono); font-size: 11px; word-break: break-all; }
+    .muted { color: var(--muted); }
+    .text-view { white-space: pre-wrap; font-family: var(--mono); font-size: 11px; }
+
+    /* JSON / log highlighting */
     .json-key { color: var(--accent); }
     .json-str { color: #4ade80; }
     .json-num { color: #fbbf24; }
     .json-kw { color: var(--muted); }
     .log-error { color: var(--bad); }
     .log-warn { color: var(--warn); }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-    .dag-node circle.running { animation: pulse 1.5s ease-in-out infinite; }
 
     @media (max-width: 900px) {
-      .main { flex-direction: column; }
-      .sidebar {
-        width: 100%;
-        height: 300px;
-        border-left: none;
-        border-top: 1px solid var(--line);
-      }
+      .expansion-content { grid-template-columns: 1fr; }
+      .docs-layout { flex-direction: column; }
+      .docs-nav { width: 100%; height: 160px; border-right: none; border-bottom: 1px solid var(--line); }
+      .runs-toolbar input { width: 180px; }
     }
   </style>
 </head>
@@ -317,30 +382,65 @@
     <span id="stamp"></span>
   </div>
 
-  <!-- Main layout -->
-  <div class="main">
-    <!-- Left: DAG + detail -->
-    <div class="left-panel">
-      <div class="dag-area" id="dag-area">
-        <div class="dag-empty" id="dag-empty">Loading DAG...</div>
-      </div>
-      <div class="detail-area" id="detail">
-        <div class="muted">Click a DAG node or run row to explore thread artifacts.</div>
-      </div>
-    </div>
+  <!-- Tab bar -->
+  <div class="tab-bar" id="tab-bar">
+    <button class="tab-btn active" data-tab="runs">Runs</button>
+    <button class="tab-btn" data-tab="dag">DAG</button>
+    <button class="tab-btn" data-tab="docs">Docs</button>
+  </div>
 
-    <!-- Right sidebar: doc viewer -->
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <h3>State Files</h3>
-        <div class="doc-tabs" id="doc-tabs"></div>
+  <!-- Runs tab -->
+  <div class="tab-panel active" id="tab-runs">
+    <div class="runs-toolbar">
+      <input type="text" id="runs-search" placeholder="Filter by run ID, kit, phase..." />
+      <span id="runs-count" class="muted"></span>
+    </div>
+    <div class="runs-table-wrap">
+      <table class="runs-table">
+        <thead>
+          <tr>
+            <th data-sort="status">Status</th>
+            <th data-sort="kit">Kit</th>
+            <th data-sort="phase">Phase</th>
+            <th data-sort="run_id">Run ID</th>
+            <th data-sort="started_at">Started</th>
+            <th>Duration</th>
+            <th>Exit</th>
+            <th>Artifacts</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+    </div>
+    <div class="runs-pagination">
+      <button id="runs-prev" disabled>Previous</button>
+      <span id="runs-page-info" class="muted"></span>
+      <button id="runs-next" disabled>Next</button>
+    </div>
+  </div>
+
+  <!-- DAG tab -->
+  <div class="tab-panel" id="tab-dag">
+    <div class="dag-area" id="dag-area">
+      <div class="dag-empty" id="dag-empty">Click the DAG tab to load.</div>
+    </div>
+  </div>
+
+  <!-- Docs tab -->
+  <div class="tab-panel" id="tab-docs">
+    <div class="docs-layout">
+      <div class="docs-nav" id="docs-nav">
+        <div class="muted" style="padding:12px">Select a project.</div>
       </div>
-      <div class="sidebar-meta" id="sidebar-meta">Select a project to load state files.</div>
-      <div class="sidebar-body markdown" id="sidebar-body">(no file selected)</div>
+      <div class="docs-content-area">
+        <div class="docs-meta" id="docs-meta">Select a project to load state files.</div>
+        <div class="docs-body markdown" id="docs-body">(no file selected)</div>
+      </div>
     </div>
   </div>
 
 <script>
+/* ─── Core utilities ─── */
 const el = (id) => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -364,7 +464,7 @@ async function api(path, options = {}) {
 function qs(params) {
   const q = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
-    if (v !== '' && v !== null && v !== undefined) q.set(k, v);
+    if (v !== '' && v !== null && v !== undefined) q.set(k, String(v));
   });
   return q.toString();
 }
@@ -373,21 +473,60 @@ function escapeHtml(v) {
   return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 }
 
-function fmtStatus(s) {
-  if (s === 'ok') return '<span class="ok">ok</span>';
-  if (s === 'failed') return '<span class="bad">failed</span>';
-  if (s === 'blocked') return '<span class="warn">blocked</span>';
-  if (s === 'running') return '<span class="warn">running</span>';
-  return escapeHtml(String(s || ''));
-}
-
 function basename(p) { const s = String(p||''); return s ? s.split('/').pop() || s : ''; }
 
+/* ─── Formatting ─── */
+function fmtDuration(seconds) {
+  if (seconds == null || seconds < 0) return '-';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return s > 0 ? m + 'm ' + s + 's' : m + 'm';
+  }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
+}
+
+function fmtRelativeTime(iso) {
+  if (!iso) return '-';
+  try {
+    const date = new Date(iso);
+    const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+    if (diff < 0) return escapeHtml(iso);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
+    return date.toLocaleDateString();
+  } catch (_) { return escapeHtml(iso); }
+}
+
+function fmtStatusBadge(status, isStale) {
+  if (isStale) return '<span class="badge badge-stale">stale</span>';
+  if (status === 'ok') return '<span class="badge badge-ok">ok</span>';
+  if (status === 'failed') return '<span class="badge badge-failed">failed</span>';
+  if (status === 'running') return '<span class="badge badge-running">running</span>';
+  return '<span class="badge">' + escapeHtml(status || 'unknown') + '</span>';
+}
+
+function artifactBtns(run) {
+  const pid = escapeHtml(run.project_id || '');
+  const btns = [];
+  if (run.capsule_path) btns.push('<button class="abtn" data-pid="'+pid+'" data-path="'+escapeHtml(run.capsule_path)+'" title="Capsule">C</button>');
+  if (run.manifest_path) btns.push('<button class="abtn" data-pid="'+pid+'" data-path="'+escapeHtml(run.manifest_path)+'" title="Manifest">M</button>');
+  if (run.log_path) btns.push('<button class="abtn" data-pid="'+pid+'" data-path="'+escapeHtml(run.log_path)+'" title="Log">L</button>');
+  if (run.events_path) btns.push('<button class="abtn" data-pid="'+pid+'" data-path="'+escapeHtml(run.events_path)+'" title="Events">E</button>');
+  return btns.join('') || '<span class="muted">-</span>';
+}
+
+/* ─── Markdown / JSON / Log rendering ─── */
 function inlineMarkdown(text) {
   let out = escapeHtml(text);
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
     const safe = /^(https?:\/\/|\/)/i.test(href) ? href : '#';
-    return `<a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    return '<a href="'+escapeHtml(safe)+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
   });
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -404,8 +543,8 @@ function renderMarkdown(md) {
     if (inOl) { html.push('</ol>'); inOl = false; }
   };
   const flushCode = () => {
-    const cls = codeLang ? ` class="language-${escapeHtml(codeLang)}"` : '';
-    html.push(`<pre><code${cls}>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+    const cls = codeLang ? ' class="language-'+escapeHtml(codeLang)+'"' : '';
+    html.push('<pre><code'+cls+'>'+escapeHtml(codeLines.join('\n'))+'</code></pre>');
     codeLines = []; codeLang = '';
   };
   for (const line of lines) {
@@ -418,13 +557,13 @@ function renderMarkdown(md) {
     if (inCode) { codeLines.push(line); continue; }
     if (!line.trim()) { closeLists(); continue; }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) { closeLists(); html.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`); continue; }
+    if (heading) { closeLists(); html.push('<h'+heading[1].length+'>'+inlineMarkdown(heading[2])+'</h'+heading[1].length+'>'); continue; }
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
-    if (ul) { if (inOl) { html.push('</ol>'); inOl = false; } if (!inUl) { html.push('<ul>'); inUl = true; } html.push(`<li>${inlineMarkdown(ul[1])}</li>`); continue; }
+    if (ul) { if (inOl) { html.push('</ol>'); inOl = false; } if (!inUl) { html.push('<ul>'); inUl = true; } html.push('<li>'+inlineMarkdown(ul[1])+'</li>'); continue; }
     const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (ol) { if (inUl) { html.push('</ul>'); inUl = false; } if (!inOl) { html.push('<ol>'); inOl = true; } html.push(`<li>${inlineMarkdown(ol[1])}</li>`); continue; }
+    if (ol) { if (inUl) { html.push('</ul>'); inUl = false; } if (!inOl) { html.push('<ol>'); inOl = true; } html.push('<li>'+inlineMarkdown(ol[1])+'</li>'); continue; }
     closeLists();
-    html.push(`<p>${inlineMarkdown(line)}</p>`);
+    html.push('<p>'+inlineMarkdown(line)+'</p>');
   }
   if (inCode) flushCode();
   closeLists();
@@ -450,6 +589,18 @@ function renderLog(text) {
   }).join('\n') + '</pre>';
 }
 
+function renderArtifact(payload) {
+  if (payload.kind === 'markdown') {
+    return '<div class="markdown">' + renderMarkdown(payload.text || '') + '</div>';
+  } else if (payload.kind === 'json' || payload.kind === 'jsonl') {
+    return renderJson(payload.text || '');
+  } else if (payload.path && payload.path.endsWith('.log')) {
+    return renderLog(payload.text || '');
+  } else {
+    return '<pre style="margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:11px">' + escapeHtml(payload.text || '') + '</pre>';
+  }
+}
+
 /* ─── DAG rendering ─── */
 const STATUS_COLOR = { ok: '#22c55e', failed: '#ef4444', running: '#f59e0b', unknown: '#64748b' };
 
@@ -464,41 +615,35 @@ function renderDag(data) {
   const nodeMap = {};
   data.nodes.forEach(n => { nodeMap[n.id] = n; });
 
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`;
+  let svg = '<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'">';
   svg += '<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>';
 
-  // Edges
   for (const e of data.edges) {
     const src = nodeMap[e.source];
     const tgt = nodeMap[e.target];
     if (!src || !tgt) continue;
-    const x1 = src.x + src.width;
-    const y1 = src.y + src.height / 2;
-    const x2 = tgt.x;
-    const y2 = tgt.y + tgt.height / 2;
-    const cx1 = x1 + (x2 - x1) * 0.4;
-    const cx2 = x2 - (x2 - x1) * 0.4;
+    const x1 = src.x + src.width, y1 = src.y + src.height / 2;
+    const x2 = tgt.x, y2 = tgt.y + tgt.height / 2;
+    const cx1 = x1 + (x2 - x1) * 0.4, cx2 = x2 - (x2 - x1) * 0.4;
     const stroke = e.type === 'interop' ? '#0ea5e9' : '#475569';
     const dash = e.type === 'interop' ? ' stroke-dasharray="6 3"' : '';
-    svg += `<path d="M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}" fill="none" stroke="${stroke}" stroke-width="1.5"${dash} marker-end="url(#arrow)"/>`;
+    svg += '<path d="M '+x1+' '+y1+' C '+cx1+' '+y1+', '+cx2+' '+y2+', '+x2+' '+y2+'" fill="none" stroke="'+stroke+'" stroke-width="1.5"'+dash+' marker-end="url(#arrow)"/>';
   }
 
-  // Nodes
   for (const n of data.nodes) {
     const fill = STATUS_COLOR[n.status] || STATUS_COLOR.unknown;
     const tooltip = n.reasoning ? escapeHtml(n.reasoning) : '';
-    svg += `<g class="dag-node" data-run-id="${escapeHtml(n.id)}" style="cursor:pointer">`;
-    if (tooltip) svg += `<title>${tooltip}</title>`;
-    svg += `<rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="8" fill="#1e293b" stroke="${fill}" stroke-width="2"/>`;
-    svg += `<circle cx="${n.x + 12}" cy="${n.y + n.height / 2}" r="5" fill="${fill}"${n.status === 'running' ? ' class="running"' : ''}/>`;
-    svg += `<text x="${n.x + 22}" y="${n.y + 17}" fill="#e2e8f0" font-size="11" font-family="ui-monospace,monospace">${escapeHtml(n.label)}</text>`;
+    svg += '<g class="dag-node" data-run-id="'+escapeHtml(n.id)+'" style="cursor:pointer">';
+    if (tooltip) svg += '<title>'+tooltip+'</title>';
+    svg += '<rect x="'+n.x+'" y="'+n.y+'" width="'+n.width+'" height="'+n.height+'" rx="8" fill="#1e293b" stroke="'+fill+'" stroke-width="2"/>';
+    svg += '<circle cx="'+(n.x+12)+'" cy="'+(n.y+n.height/2)+'" r="5" fill="'+fill+'"'+(n.status==='running'?' class="running"':'')+'/>';
+    svg += '<text x="'+(n.x+22)+'" y="'+(n.y+17)+'" fill="#e2e8f0" font-size="11" font-family="ui-monospace,monospace">'+escapeHtml(n.label)+'</text>';
     if (n.status === 'running' && n.started_at) {
       const elapsed = Math.floor((Date.now() - new Date(n.started_at).getTime()) / 1000);
-      const mm = Math.floor(elapsed / 60);
-      const ss = elapsed % 60;
-      svg += `<text x="${n.x + 22}" y="${n.y + 32}" fill="#f59e0b" font-size="9" font-family="ui-monospace,monospace">${mm}m ${ss}s</text>`;
+      const mm = Math.floor(elapsed / 60), ss = elapsed % 60;
+      svg += '<text x="'+(n.x+22)+'" y="'+(n.y+32)+'" fill="#f59e0b" font-size="9" font-family="ui-monospace,monospace">'+mm+'m '+ss+'s</text>';
     } else {
-      svg += `<text x="${n.x + 22}" y="${n.y + 32}" fill="#94a3b8" font-size="9" font-family="ui-monospace,monospace">${escapeHtml(n.id.length > 20 ? n.id.slice(0,20)+'...' : n.id)}</text>`;
+      svg += '<text x="'+(n.x+22)+'" y="'+(n.y+32)+'" fill="#94a3b8" font-size="9" font-family="ui-monospace,monospace">'+escapeHtml(n.id.length>20?n.id.slice(0,20)+'...':n.id)+'</text>';
     }
     svg += '</g>';
   }
@@ -506,27 +651,447 @@ function renderDag(data) {
   svg += '</svg>';
   area.innerHTML = svg;
 
-  // Click handler on nodes
   area.querySelectorAll('.dag-node').forEach(g => {
     g.addEventListener('click', () => {
       const runId = g.getAttribute('data-run-id');
-      const node = nodeMap[runId];
-      if (node) loadRunDetail(el('project').value || findProjectForRun(runId), runId);
+      if (runId) {
+        const pid = el('project').value || findProjectForRun(runId);
+        TabManager.switchTo('runs');
+        RunsView.expandByRunId(pid, runId);
+      }
     });
   });
 }
 
 function findProjectForRun(runId) {
-  // fallback — pick first project
   const sel = el('project');
   if (sel.value) return sel.value;
   if (sel.options.length > 1) return sel.options[1].value;
   return '';
 }
 
-/* ─── Sidebar doc viewer ─── */
-const docState = { projectId: '', path: '', scope: 'project' };
+/* ─── Tab Manager ─── */
+const TabManager = {
+  active: 'runs',
+  dagLoaded: false,
+  docsLoaded: false,
 
+  switchTo(tabId) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabId));
+    document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + tabId));
+    this.active = tabId;
+    if (tabId === 'dag' && !this.dagLoaded) {
+      this.dagLoaded = true;
+      safeRefresh(() => DagView.load());
+    }
+    if (tabId === 'docs' && !this.docsLoaded) {
+      this.docsLoaded = true;
+      safeRefresh(() => DocsView.load(true));
+    }
+  },
+
+  init() {
+    el('tab-bar').addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (btn) this.switchTo(btn.dataset.tab);
+    });
+  }
+};
+
+/* ─── Runs View ─── */
+const RunsView = {
+  runs: [],
+  expandedRunId: null,
+  expandedProjectId: null,
+  _expandedContent: null,
+  sortCol: 'started_at',
+  sortDesc: true,
+  offset: 0,
+  limit: 50,
+  searchFilter: '',
+  hasMore: false,
+
+  async load() {
+    const pid = el('project').value;
+    const status = el('status').value;
+    const kitVal = el('kit').value;
+    const sortParam = (this.sortDesc ? '-' : '') + this.sortCol;
+    const data = await api('/api/runs?' + qs({
+      project_id: pid,
+      status: status,
+      kit: kitVal,
+      limit: this.limit,
+      offset: this.offset,
+      sort: sortParam,
+    }));
+    this.runs = data.runs || [];
+    this.hasMore = data.has_more || false;
+    this.render();
+  },
+
+  render() {
+    const tbody = el('runs-tbody');
+    const filter = this.searchFilter.toLowerCase();
+    const filtered = filter
+      ? this.runs.filter(r => (r.run_id + ' ' + r.kit + ' ' + r.phase + ' ' + r.status).toLowerCase().includes(filter))
+      : this.runs;
+
+    let html = '';
+    for (const r of filtered) {
+      const rid = r.run_id || '';
+      const isExpanded = this.expandedRunId === rid;
+      html += '<tr class="run-row' + (isExpanded ? ' expanded' : '') + '" data-run-id="' + escapeHtml(rid) + '" data-project-id="' + escapeHtml(r.project_id || '') + '">'
+        + '<td>' + fmtStatusBadge(r.status, r.is_stale) + '</td>'
+        + '<td>' + escapeHtml(r.kit || '-') + '</td>'
+        + '<td>' + escapeHtml(r.phase || '-') + '</td>'
+        + '<td class="mono" title="' + escapeHtml(rid) + '">' + escapeHtml(rid.length > 24 ? rid.slice(0, 24) + '\u2026' : rid) + '</td>'
+        + '<td title="' + escapeHtml(r.started_at || '') + '">' + fmtRelativeTime(r.started_at) + '</td>'
+        + '<td>' + fmtDuration(r.duration_seconds) + '</td>'
+        + '<td class="mono">' + (r.exit_code != null ? escapeHtml(String(r.exit_code)) : '-') + '</td>'
+        + '<td class="artifact-buttons">' + artifactBtns(r) + '</td>'
+        + '</tr>';
+      if (isExpanded) {
+        const left = this._expandedContent ? this._expandedContent.left : '<div class="muted">Loading...</div>';
+        const right = this._expandedContent ? this._expandedContent.right : '<div class="muted"></div>';
+        html += '<tr class="expansion-row"><td colspan="8" class="expansion-cell">'
+          + '<div class="expansion-content" id="exp-content">'
+          + '<div class="expansion-left">' + left + '</div>'
+          + '<div class="expansion-right">' + right + '</div>'
+          + '</div></td></tr>';
+      }
+    }
+    if (!html) {
+      html = '<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">No runs found.</td></tr>';
+    }
+    tbody.innerHTML = html;
+
+    el('runs-prev').disabled = this.offset === 0;
+    el('runs-next').disabled = !this.hasMore;
+    el('runs-page-info').textContent = filtered.length ? (this.offset + 1) + '\u2013' + (this.offset + filtered.length) : '';
+    el('runs-count').textContent = filtered.length + ' run' + (filtered.length !== 1 ? 's' : '');
+
+    document.querySelectorAll('.runs-table th[data-sort]').forEach(th => {
+      const arrow = th.querySelector('.sort-arrow');
+      if (arrow) arrow.remove();
+      if (th.dataset.sort === this.sortCol) {
+        const span = document.createElement('span');
+        span.className = 'sort-arrow';
+        span.textContent = this.sortDesc ? ' \u25BC' : ' \u25B2';
+        th.appendChild(span);
+      }
+    });
+  },
+
+  toggleExpand(runId, projectId) {
+    if (this.expandedRunId === runId) {
+      this.expandedRunId = null;
+      this.expandedProjectId = null;
+      this._expandedContent = null;
+      this.render();
+    } else {
+      this.expandedRunId = runId;
+      this.expandedProjectId = projectId;
+      this._expandedContent = null;
+      this.render();
+      this._loadExpansion();
+    }
+  },
+
+  expandByRunId(projectId, runId) {
+    this.expandedRunId = runId;
+    this.expandedProjectId = projectId;
+    this._expandedContent = null;
+    this.render();
+    this._loadExpansion();
+  },
+
+  async _loadExpansion() {
+    const pid = this.expandedProjectId;
+    const rid = this.expandedRunId;
+    if (!pid || !rid) return;
+
+    try {
+      const [capsuleData, runData] = await Promise.all([
+        api('/api/capsule-preview?' + qs({ project_id: pid, run_id: rid })),
+        api('/api/run?' + qs({ project_id: pid, run_id: rid })),
+      ]);
+
+      let leftHtml = '<h4>Capsule</h4>';
+      if (capsuleData.capsule && capsuleData.capsule.text) {
+        leftHtml += '<div class="markdown">' + renderMarkdown(capsuleData.capsule.text) + '</div>';
+      } else {
+        leftHtml += '<div class="muted">No capsule available.</div>';
+      }
+
+      const threadRuns = runData.thread_runs || [];
+      if (threadRuns.length > 1) {
+        leftHtml += '<h4 style="margin-top:12px">Thread Runs</h4>';
+        leftHtml += '<div class="thread-table-wrap"><table class="thread-table"><thead><tr><th>Status</th><th>Kit.Phase</th><th>Run ID</th><th>Started</th></tr></thead><tbody>';
+        for (const tr of threadRuns) {
+          const trRid = tr.run_id || '';
+          const isCurrent = trRid === rid;
+          leftHtml += '<tr' + (isCurrent ? ' style="background:rgba(14,165,233,0.08)"' : '') + '>'
+            + '<td>' + fmtStatusBadge(tr.status, false) + '</td>'
+            + '<td>' + escapeHtml((tr.kit||'?')+'.'+(tr.phase||'?')) + '</td>'
+            + '<td class="mono" title="' + escapeHtml(trRid) + '">' + escapeHtml(trRid.length > 20 ? trRid.slice(0,20)+'\u2026' : trRid) + '</td>'
+            + '<td>' + fmtRelativeTime(tr.started_at) + '</td>'
+            + '</tr>';
+        }
+        leftHtml += '</tbody></table></div>';
+      }
+
+      const paths = capsuleData.artifact_paths || {};
+      let rightHtml = '<h4>Artifacts</h4><div class="artifact-buttons" style="margin-bottom:8px">';
+      if (paths.capsule) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.capsule)+'">Capsule</button>';
+      if (paths.manifest) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.manifest)+'">Manifest</button>';
+      if (paths.log) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.log)+'">Log</button>';
+      if (paths.events) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.events)+'">Events</button>';
+      rightHtml += '</div>';
+      rightHtml += '<div class="exp-viewer-meta muted" style="font-size:11px;margin-bottom:4px">Click an artifact to view.</div>';
+      rightHtml += '<div class="exp-viewer"><div class="muted">(no artifact loaded)</div></div>';
+
+      this._expandedContent = { left: leftHtml, right: rightHtml };
+
+      // Update the DOM if still expanded on same run
+      if (this.expandedRunId === rid) {
+        const container = document.getElementById('exp-content');
+        if (container) {
+          container.querySelector('.expansion-left').innerHTML = leftHtml;
+          container.querySelector('.expansion-right').innerHTML = rightHtml;
+        }
+      }
+    } catch (err) {
+      const errHtml = '<div class="muted">Error: ' + escapeHtml(err.message) + '</div>';
+      this._expandedContent = { left: errHtml, right: '' };
+      if (this.expandedRunId === rid) {
+        const container = document.getElementById('exp-content');
+        if (container) container.querySelector('.expansion-left').innerHTML = errHtml;
+      }
+    }
+  },
+
+  async _loadArtifactInViewer(pid, path) {
+    const viewer = document.querySelector('.exp-viewer');
+    const meta = document.querySelector('.exp-viewer-meta');
+    if (!viewer || !meta) return;
+
+    viewer.innerHTML = '<div class="muted">Loading...</div>';
+    try {
+      const payload = await api('/api/artifact?' + qs({ project_id: pid, path: path, max_bytes: 220000 }));
+      const trunc = payload.truncated ? ' (truncated)' : '';
+      meta.textContent = payload.path + ' \u2022 ' + payload.kind + ' \u2022 ' + payload.bytes_read + '/' + payload.bytes_total + 'b' + trunc;
+      viewer.innerHTML = renderArtifact(payload);
+
+      // Update cache so re-renders preserve viewer content
+      if (this._expandedContent) {
+        const rightEl = document.querySelector('.expansion-right');
+        if (rightEl) this._expandedContent.right = rightEl.innerHTML;
+      }
+    } catch (err) {
+      viewer.innerHTML = '<div class="muted">Error: ' + escapeHtml(err.message) + '</div>';
+    }
+  },
+
+  sort(col) {
+    if (this.sortCol === col) {
+      this.sortDesc = !this.sortDesc;
+    } else {
+      this.sortCol = col;
+      this.sortDesc = true;
+    }
+    this.offset = 0;
+    this.expandedRunId = null;
+    this._expandedContent = null;
+    this.load();
+  },
+
+  nextPage() {
+    if (this.hasMore) {
+      this.offset += this.limit;
+      this.expandedRunId = null;
+      this._expandedContent = null;
+      this.load();
+    }
+  },
+
+  prevPage() {
+    if (this.offset > 0) {
+      this.offset = Math.max(0, this.offset - this.limit);
+      this.expandedRunId = null;
+      this._expandedContent = null;
+      this.load();
+    }
+  },
+
+  init() {
+    document.querySelectorAll('.runs-table th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => this.sort(th.dataset.sort));
+    });
+
+    el('runs-tbody').addEventListener('click', (e) => {
+      const abtn = e.target.closest('.abtn');
+      if (abtn) {
+        e.stopPropagation();
+        const pid = abtn.dataset.pid;
+        const path = abtn.dataset.path;
+        const row = abtn.closest('.run-row');
+        if (row && this.expandedRunId !== row.dataset.runId) {
+          this.expandedRunId = row.dataset.runId;
+          this.expandedProjectId = row.dataset.projectId;
+          this._expandedContent = null;
+          this.render();
+          this._loadExpansion().then(() => this._loadArtifactInViewer(pid, path));
+        } else {
+          this._loadArtifactInViewer(pid, path);
+        }
+        return;
+      }
+
+      const expBtn = e.target.closest('.exp-artifact-btn');
+      if (expBtn) {
+        e.stopPropagation();
+        this._loadArtifactInViewer(expBtn.dataset.pid, expBtn.dataset.path);
+        return;
+      }
+
+      const row = e.target.closest('.run-row');
+      if (row) {
+        this.toggleExpand(row.dataset.runId, row.dataset.projectId);
+      }
+    });
+
+    el('runs-search').addEventListener('input', (e) => {
+      this.searchFilter = e.target.value;
+      this.render();
+    });
+
+    el('runs-prev').addEventListener('click', () => this.prevPage());
+    el('runs-next').addEventListener('click', () => this.nextPage());
+  }
+};
+
+/* ─── DAG View ─── */
+const DagView = {
+  async load() {
+    const pid = el('project').value;
+    const data = await api('/api/dag?' + qs({ project_id: pid }));
+    renderDag(data);
+  }
+};
+
+/* ─── Docs View ─── */
+const DocsView = {
+  projectId: '',
+  path: '',
+  scope: 'project',
+
+  async load(force) {
+    const pid = preferredProjectId();
+    this.projectId = pid;
+    const nav = el('docs-nav');
+    const meta = el('docs-meta');
+    const body = el('docs-body');
+
+    if (!pid) {
+      nav.innerHTML = '<div class="muted" style="padding:12px">Select a project.</div>';
+      meta.textContent = 'Select a project to load state files.';
+      body.className = 'docs-body markdown';
+      body.innerHTML = '(no project)';
+      return;
+    }
+
+    const payload = await api('/api/project-docs?' + qs({ project_id: pid }));
+    const docs = Array.isArray(payload.docs) ? payload.docs : [];
+    const existing = docs.filter(d => d && d.exists && d.path);
+
+    if (!existing.length) {
+      nav.innerHTML = '<div class="muted" style="padding:12px">No state files found.</div>';
+      meta.textContent = 'project ' + pid;
+      body.innerHTML = '(no files)';
+      return;
+    }
+
+    const populated = existing.filter(d => d.populated !== false);
+    const unpopulated = existing.filter(d => d.populated === false);
+
+    let navHtml = '';
+    for (const d of populated) {
+      navHtml += '<button class="docs-nav-item" data-path="'+escapeHtml(d.path)+'" data-scope="'+escapeHtml(d.scope||'project')+'" data-populated="true">'+escapeHtml(d.name || d.path)+'</button>';
+    }
+    for (const d of unpopulated) {
+      navHtml += '<button class="docs-nav-item template" data-path="'+escapeHtml(d.path)+'" data-scope="'+escapeHtml(d.scope||'project')+'" data-populated="false">'+escapeHtml(d.name || d.path)+'</button>';
+    }
+    nav.innerHTML = navHtml;
+
+    const mustReset = force || !this.path || !populated.some(d => String(d.path) === this.path);
+    if (mustReset) {
+      if (populated.length) {
+        const preferred = populated.find(d => ['LAST_TOUCH.md','DOMAIN_PRIORS.md','CONSTRUCTION_LOG.md'].includes(String(d.name||''))) || populated[0];
+        this.path = String(preferred.path || '');
+        this.scope = String(preferred.scope || 'project');
+      } else {
+        this.path = '';
+        meta.textContent = 'project ' + pid;
+        body.className = 'docs-body markdown';
+        body.innerHTML = '<p class="muted">State files exist but are not yet populated.</p>';
+        return;
+      }
+    }
+
+    this.highlight();
+    if (this.path) await this.loadContent();
+  },
+
+  highlight() {
+    el('docs-nav').querySelectorAll('.docs-nav-item').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.path === this.path);
+    });
+  },
+
+  async loadContent() {
+    if (!this.projectId || !this.path) return;
+    const payload = await api('/api/artifact?' + qs({
+      project_id: this.projectId,
+      path: this.path,
+      scope: this.scope,
+      max_bytes: 220000,
+    }));
+    const meta = el('docs-meta');
+    const body = el('docs-body');
+    const trunc = payload.truncated ? ' (truncated)' : '';
+    meta.textContent = payload.path + ' \u2022 ' + payload.bytes_read + '/' + payload.bytes_total + 'b' + trunc;
+    if (payload.kind === 'markdown') {
+      body.className = 'docs-body markdown';
+      body.innerHTML = renderMarkdown(payload.text || '');
+    } else if (payload.kind === 'json' || payload.kind === 'jsonl') {
+      body.className = 'docs-body';
+      body.innerHTML = renderJson(payload.text || '');
+    } else {
+      body.className = 'docs-body text-view';
+      body.textContent = payload.text || '';
+    }
+  },
+
+  init() {
+    el('docs-nav').addEventListener('click', async (e) => {
+      const btn = e.target.closest('.docs-nav-item');
+      if (!btn) return;
+      this.path = btn.dataset.path || '';
+      this.scope = btn.dataset.scope || 'project';
+      this.highlight();
+      if (btn.dataset.populated === 'false') {
+        el('docs-meta').textContent = this.path;
+        const body = el('docs-body');
+        body.className = 'docs-body markdown';
+        body.innerHTML = '<p class="muted">Template \u2014 not yet populated</p>';
+        return;
+      }
+      await safeRefresh(() => this.loadContent());
+    });
+  }
+};
+
+/* ─── Projects + Summary ─── */
 function preferredProjectId() {
   const v = el('project').value;
   if (v) return v;
@@ -535,98 +1100,6 @@ function preferredProjectId() {
   return '';
 }
 
-async function loadProjectDocs(force) {
-  const pid = preferredProjectId();
-  docState.projectId = pid;
-  const tabs = el('doc-tabs');
-  const meta = el('sidebar-meta');
-  const body = el('sidebar-body');
-  if (!pid) {
-    tabs.innerHTML = '';
-    meta.textContent = 'Select a project.';
-    body.classList.add('markdown');
-    body.innerHTML = '(no project)';
-    return;
-  }
-  const payload = await api(`/api/project-docs?${qs({project_id: pid})}`);
-  const docs = Array.isArray(payload.docs) ? payload.docs : [];
-  const existing = docs.filter(d => d && d.exists && d.path);
-  if (!existing.length) {
-    tabs.innerHTML = '<span class="muted">No state files found.</span>';
-    meta.textContent = `project ${pid}`;
-    body.innerHTML = '(no files)';
-    return;
-  }
-  const populated = existing.filter(d => d.populated !== false);
-  const unpopulated = existing.filter(d => d.populated === false);
-  const makeBtn = (d, cls) => {
-    const p = String(d.path||'');
-    const s = String(d.scope||'project');
-    return `<button data-path="${escapeHtml(p)}" data-scope="${escapeHtml(s)}" data-populated="${d.populated !== false ? 'true' : 'false'}"${cls ? ' class="'+cls+'"' : ''}>${escapeHtml(d.name||p)}</button>`;
-  };
-  tabs.innerHTML = populated.map(d => makeBtn(d, '')).join('') + unpopulated.map(d => makeBtn(d, 'template')).join('');
-  const mustReset = force || !docState.path || !populated.some(d => String(d.path) === docState.path);
-  if (mustReset) {
-    if (populated.length) {
-      const preferred = populated.find(d => ['LAST_TOUCH.md','DOMAIN_PRIORS.md','CONSTRUCTION_LOG.md'].includes(String(d.name||''))) || populated[0];
-      docState.path = String(preferred.path||'');
-      docState.scope = String(preferred.scope||'project');
-    } else {
-      docState.path = '';
-      meta.textContent = `project ${pid}`;
-      body.className = 'sidebar-body markdown';
-      body.innerHTML = '<p class="muted">State files exist but are not yet populated.</p>';
-      return;
-    }
-  }
-  highlightDocTab();
-  if (docState.path) await loadDocContent();
-}
-
-function highlightDocTab() {
-  el('doc-tabs').querySelectorAll('button').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-path') === docState.path);
-  });
-}
-
-async function loadDocContent() {
-  if (!docState.projectId || !docState.path) return;
-  const payload = await api(`/api/artifact?${qs({
-    project_id: docState.projectId,
-    path: docState.path,
-    scope: docState.scope,
-    max_bytes: 220000,
-  })}`);
-  const meta = el('sidebar-meta');
-  const body = el('sidebar-body');
-  const trunc = payload.truncated ? ' (truncated)' : '';
-  meta.textContent = `${payload.path} \u2022 ${payload.bytes_read}/${payload.bytes_total}b${trunc}`;
-  if (payload.kind === 'markdown') {
-    body.className = 'sidebar-body markdown';
-    body.innerHTML = renderMarkdown(payload.text || '');
-  } else {
-    body.className = 'sidebar-body text-view';
-    body.textContent = payload.text || '';
-  }
-}
-
-el('doc-tabs').addEventListener('click', async (evt) => {
-  const btn = evt.target.closest('button');
-  if (!btn) return;
-  docState.path = btn.getAttribute('data-path') || '';
-  docState.scope = btn.getAttribute('data-scope') || 'project';
-  highlightDocTab();
-  if (btn.getAttribute('data-populated') === 'false') {
-    el('sidebar-meta').textContent = docState.path;
-    const body = el('sidebar-body');
-    body.className = 'sidebar-body markdown';
-    body.innerHTML = '<p class="muted">Template \u2014 not yet populated</p>';
-    return;
-  }
-  await safeRefresh(loadDocContent);
-});
-
-/* ─── Projects, summary, DAG loading ─── */
 async function loadProjects() {
   const sel = el('project');
   sel.innerHTML = '';
@@ -637,18 +1110,18 @@ async function loadProjects() {
   for (const p of payload.projects) {
     const opt = document.createElement('option');
     opt.value = p.project_id;
-    opt.textContent = `${p.label} [${p.project_id}]`;
+    opt.textContent = p.label + ' [' + p.project_id + ']';
     sel.appendChild(opt);
   }
 }
 
 function card(label, value, klass) {
-  return `<div class="card"><div class="k">${label}</div><div class="v ${klass||''}">${value??0}</div></div>`;
+  return '<div class="card"><div class="k">'+label+'</div><div class="v '+(klass||'')+'">'+String(value??0)+'</div></div>';
 }
 
 async function loadSummary() {
   const pid = el('project').value;
-  const s = await api(`/api/summary?${qs({project_id: pid})}`);
+  const s = await api('/api/summary?' + qs({ project_id: pid }));
   const r = s.summary.runs || {};
   const q = s.summary.requests || {};
   el('cards').innerHTML = [
@@ -661,147 +1134,92 @@ async function loadSummary() {
   ].join('');
 }
 
-async function loadDag() {
-  const pid = el('project').value;
-  const data = await api(`/api/dag?${qs({project_id: pid})}`);
-  renderDag(data);
-}
-
-/* ─── Run detail ─── */
-function artifactBtn(pid, path, label, runId) {
-  if (!path) return '';
-  return `<button class="artifact-btn" data-pid="${escapeHtml(pid)}" data-path="${escapeHtml(path)}" data-run="${escapeHtml(runId||'')}">${escapeHtml(label)}</button>`;
-}
-
-async function loadRunDetail(projectId, runId) {
-  if (!projectId || !runId) return;
-  const payload = await api(`/api/run?${qs({project_id: projectId, run_id: runId})}`);
-  const sel = payload.run || {};
-  const runsRows = (payload.thread_runs||[]).map(r => {
-    const rid = String(r.run_id||'');
-    const btns = [
-      artifactBtn(projectId, r.capsule_path, basename(r.capsule_path)||'capsule', rid),
-      artifactBtn(projectId, r.manifest_path, basename(r.manifest_path)||'manifest', rid),
-      artifactBtn(projectId, r.log_path, basename(r.log_path)||'log', rid),
-      artifactBtn(projectId, r.events_path, basename(r.events_path)||'events', rid),
-    ].filter(Boolean).join('');
-    const reasoningTip = r.reasoning ? ` title="${escapeHtml(r.reasoning)}"` : '';
-    return `<tr data-thread-run-id="${escapeHtml(rid)}"${reasoningTip}><td class="mono">${escapeHtml(rid)}</td><td>${fmtStatus(r.status)}</td><td>${escapeHtml((r.kit||'?')+'.'+(r.phase||'?'))}</td><td class="mono">${escapeHtml(r.parent_run_id||'')}</td><td class="mono">${escapeHtml(r.started_at||'')}</td><td>${r.reasoning ? '<span class="muted" style="font-size:10px;margin-right:4px" title="'+escapeHtml(r.reasoning)+'">R</span>' : ''}${btns||'<span class="muted">-</span>'}</td></tr>`;
-  }).join('');
-
-  const reqRows = (payload.thread_requests||[]).map(r => {
-    const rTip = r.reasoning ? ` title="${escapeHtml(r.reasoning)}"` : '';
-    return `<tr${rTip}><td class="mono">${escapeHtml(r.request_id||'')}</td><td>${fmtStatus(r.status)}</td><td class="mono">${escapeHtml((r.from_kit||'?')+'.'+(r.from_phase||'?')+' -> '+(r.to_kit||'?')+'.'+(r.to_phase||'?'))}</td><td class="mono">${escapeHtml(r.child_run_id||'')}</td><td class="muted" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.reasoning||'')}</td></tr>`;
-  }).join('');
-
-  const detail = el('detail');
-  const selReasoning = sel.reasoning ? `<div class="muted" style="font-size:11px;margin-bottom:6px"><strong>Reasoning:</strong> ${escapeHtml(sel.reasoning)}</div>` : '';
-  detail.innerHTML = `
-    <h3>Thread ${escapeHtml(payload.thread_root_run_id||'')} &mdash; ${escapeHtml((sel.kit||'?')+'.'+(sel.phase||'?'))} ${fmtStatus(sel.status)}</h3>${selReasoning}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div>
-        <div style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:6px">
-          <table><thead><tr><th>run</th><th>st</th><th>phase</th><th>parent</th><th>start</th><th>artifacts</th></tr></thead>
-          <tbody>${runsRows||'<tr><td colspan="6" class="muted">No runs.</td></tr>'}</tbody></table>
-        </div>
-        ${reqRows ? `<div style="margin-top:8px;max-height:120px;overflow:auto;border:1px solid var(--line);border-radius:6px"><table><thead><tr><th>request</th><th>st</th><th>edge</th><th>child</th><th>reasoning</th></tr></thead><tbody>${reqRows}</tbody></table></div>` : ''}
-      </div>
-      <div>
-        <div id="artifact-meta" class="muted" style="font-size:11px;margin-bottom:4px">Click an artifact button.</div>
-        <div id="artifact-body" class="sidebar-body text-view" style="max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">(no artifact)</div>
-      </div>
-    </div>`;
-
-  // Highlight selected run in DAG
-  el('dag-area').querySelectorAll('.dag-node rect').forEach(rect => {
-    const g = rect.parentElement;
-    if (g.getAttribute('data-run-id') === runId) {
-      rect.setAttribute('stroke-width', '3');
-    }
-  });
-}
-
-// Artifact click in detail area
-el('detail').addEventListener('click', async (evt) => {
-  const btn = evt.target.closest('.artifact-btn');
-  if (!btn) return;
-  evt.preventDefault();
-  const pid = btn.getAttribute('data-pid') || '';
-  const path = btn.getAttribute('data-path') || '';
-  if (!pid || !path) return;
-  const payload = await api(`/api/artifact?${qs({project_id: pid, path: path, max_bytes: 220000})}`);
-  const meta = el('artifact-meta');
-  const body = el('artifact-body');
-  if (!meta || !body) return;
-  const trunc = payload.truncated ? ' (truncated)' : '';
-  meta.textContent = `${payload.path} \u2022 ${payload.kind} \u2022 ${payload.bytes_read}/${payload.bytes_total}b${trunc}`;
-  body.style.maxHeight = '240px';
-  if (payload.kind === 'markdown') {
-    body.className = 'sidebar-body markdown';
-    body.innerHTML = renderMarkdown(payload.text || '');
-  } else if (payload.kind === 'json' || payload.kind === 'jsonl') {
-    body.className = 'sidebar-body';
-    body.innerHTML = renderJson(payload.text || '');
-  } else if (payload.path && payload.path.endsWith('.log')) {
-    body.className = 'sidebar-body';
-    body.innerHTML = renderLog(payload.text || '');
-  } else {
-    body.className = 'sidebar-body text-view';
-    body.textContent = payload.text || '';
-  }
-});
-
-/* ─── Load all + events ─── */
-async function loadAll() {
-  await Promise.all([loadSummary(), loadDag(), loadProjectDocs()]);
-  el('stamp').textContent = `updated ${new Date().toLocaleTimeString()}`;
-}
-
+/* ─── Safe refresh ─── */
 async function safeRefresh(fn) {
   try { await fn(); } catch (err) {
-    el('stamp').textContent = `error: ${err.message || err}`;
+    el('stamp').textContent = 'error: ' + (err.message || err);
     console.error(err);
   }
 }
 
-el('refresh-index').addEventListener('click', async () => {
-  await safeRefresh(async () => {
-    const pid = el('project').value;
-    await api('/api/refresh', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(pid ? {project_id: pid} : {}),
-    });
-    await loadAll();
-  });
-});
-el('reload').addEventListener('click', () => safeRefresh(loadAll));
-el('project').addEventListener('change', async () => {
-  el('detail').innerHTML = '<div class="muted">Click a DAG node or run row to explore.</div>';
-  docState.path = '';
-  await safeRefresh(loadAll);
-});
-el('status').addEventListener('change', () => safeRefresh(loadDag));
-el('kit').addEventListener('change', () => safeRefresh(loadDag));
-
+/* ─── Boot ─── */
 (async function boot() {
+  TabManager.init();
+  RunsView.init();
+  DocsView.init();
+
   await safeRefresh(async () => {
     await loadProjects();
-    await loadAll();
+    await Promise.all([loadSummary(), RunsView.load()]);
+    el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
   });
-  setInterval(() => { void safeRefresh(loadDocContent); }, 5000);
+
+  // Auto-refresh: poll summary, reload runs if active runs detected
   let _prevRunning = 0;
   setInterval(async () => {
     try {
       const pid = el('project').value;
-      const s = await api(`/api/summary?${qs({project_id: pid})}`);
+      const s = await api('/api/summary?' + qs({ project_id: pid }));
       const running = s.summary?.runs?.running_runs || 0;
       if (running > 0 || _prevRunning > 0) {
-        await loadAll();
+        await loadSummary();
+        if (TabManager.active === 'runs') await RunsView.load();
+        if (TabManager.active === 'dag' && TabManager.dagLoaded) DagView.load();
+        el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
       }
       _prevRunning = running;
     } catch (_) {}
-  }, 3000);
+  }, 5000);
+
+  // Header event listeners
+  el('refresh-index').addEventListener('click', async () => {
+    await safeRefresh(async () => {
+      const pid = el('project').value;
+      await api('/api/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pid ? { project_id: pid } : {}),
+      });
+      await Promise.all([loadSummary(), RunsView.load()]);
+      if (TabManager.dagLoaded) DagView.load();
+      if (TabManager.docsLoaded) DocsView.load();
+      el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+    });
+  });
+
+  el('reload').addEventListener('click', () => safeRefresh(async () => {
+    await Promise.all([loadSummary(), RunsView.load()]);
+    el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+  }));
+
+  el('project').addEventListener('change', async () => {
+    RunsView.expandedRunId = null;
+    RunsView._expandedContent = null;
+    RunsView.offset = 0;
+    DocsView.path = '';
+    TabManager.dagLoaded = false;
+    TabManager.docsLoaded = false;
+    await safeRefresh(async () => {
+      await Promise.all([loadSummary(), RunsView.load()]);
+      if (TabManager.active === 'dag') { TabManager.dagLoaded = true; DagView.load(); }
+      if (TabManager.active === 'docs') { TabManager.docsLoaded = true; DocsView.load(true); }
+      el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+    });
+  });
+
+  el('status').addEventListener('change', () => {
+    RunsView.offset = 0;
+    RunsView.expandedRunId = null;
+    RunsView._expandedContent = null;
+    safeRefresh(() => RunsView.load());
+  });
+
+  el('kit').addEventListener('change', () => {
+    RunsView.offset = 0;
+    RunsView.expandedRunId = null;
+    RunsView._expandedContent = null;
+    safeRefresh(() => RunsView.load());
+  });
 })();
 </script>
 </body>

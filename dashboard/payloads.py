@@ -137,6 +137,17 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
     kit = query.get("kit")
     phase = query.get("phase")
     limit = parse_int(query.get("limit"), 200, 1, 2000)
+    offset = parse_int(query.get("offset"), 0, 0, 100000)
+
+    # Sort validation
+    sort_raw = query.get("sort") or "-started_at"
+    allowed_sort_cols = {"started_at", "status", "kit", "phase", "run_id"}
+    desc = sort_raw.startswith("-")
+    sort_col = sort_raw.lstrip("-")
+    if sort_col not in allowed_sort_cols:
+        sort_col = "started_at"
+        desc = True
+    order_dir = "DESC" if desc else "ASC"
 
     clauses: list[str] = []
     params: list[Any] = []
@@ -183,13 +194,33 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
           reasoning
         FROM runs
         {where}
-        ORDER BY COALESCE(started_at, '') DESC, run_id DESC
-        LIMIT ?
+        ORDER BY COALESCE({sort_col}, '') {order_dir}, run_id DESC
+        LIMIT ? OFFSET ?
         """,
-        tuple([*params, limit]),
+        tuple([*params, limit, offset]),
     )
 
-    return {"runs": rows, "limit": limit}
+    # Post-process: add duration_seconds and is_stale
+    now = dt.datetime.now(dt.timezone.utc)
+    for row in rows:
+        started = row.get("started_at")
+        finished = row.get("finished_at")
+        duration = None
+        if started:
+            try:
+                start_dt = dt.datetime.fromisoformat(started.replace("Z", "+00:00"))
+                if finished:
+                    end_dt = dt.datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                else:
+                    end_dt = now
+                duration = max(0, int((end_dt - start_dt).total_seconds()))
+            except (ValueError, TypeError):
+                pass
+        row["duration_seconds"] = duration
+        row["is_stale"] = row.get("status") == "running" and duration is not None and duration > 1800
+
+    has_more = len(rows) == limit
+    return {"runs": rows, "limit": limit, "offset": offset, "has_more": has_more}
 
 
 def _parent_map(rows: list[dict[str, Any]]) -> dict[str, str | None]:
@@ -506,3 +537,34 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
         "project_id": project_id,
         "docs": entries,
     }
+
+
+def capsule_preview_payload(project_id: str, run_id: str) -> dict[str, Any]:
+    run = load_one_row(
+        "SELECT capsule_path, manifest_path, log_path, events_path FROM runs WHERE project_id = ? AND run_id = ?",
+        (project_id, run_id),
+    )
+    if run is None:
+        raise KeyError("run not found")
+
+    result: dict[str, Any] = {"project_id": project_id, "run_id": run_id}
+
+    for key in ("capsule_path", "manifest_path"):
+        path = run.get(key)
+        if path:
+            try:
+                payload = artifact_payload(project_id=project_id, raw_path=path, max_bytes=60000)
+                result[key.replace("_path", "")] = payload
+            except (FileNotFoundError, ValueError):
+                result[key.replace("_path", "")] = None
+        else:
+            result[key.replace("_path", "")] = None
+
+    result["artifact_paths"] = {
+        "capsule": run.get("capsule_path"),
+        "manifest": run.get("manifest_path"),
+        "log": run.get("log_path"),
+        "events": run.get("events_path"),
+    }
+
+    return result
