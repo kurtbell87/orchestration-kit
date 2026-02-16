@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<USAGE
 Usage:
-  tools/spawn-codex-worker <request_id> [--project-root /path/to/master-kit] [--prefer-cli]
+  tools/spawn-codex-worker <request_id> [--project-root /path/to/orchestration-kit] [--prefer-cli]
 USAGE
 }
 
@@ -46,21 +46,21 @@ else
   PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 fi
 
-export MASTER_KIT_ROOT="$PROJECT_ROOT"
-export MASTER_KIT_AGENT_RUNTIME="codex"
-export MASTER_KIT_MCP_HOST="${MASTER_KIT_MCP_HOST:-127.0.0.1}"
-export MASTER_KIT_MCP_PORT="${MASTER_KIT_MCP_PORT:-7337}"
+export ORCHESTRATION_KIT_ROOT="$PROJECT_ROOT"
+export ORCHESTRATION_KIT_AGENT_RUNTIME="codex"
+export ORCHESTRATION_KIT_MCP_HOST="${ORCHESTRATION_KIT_MCP_HOST:-127.0.0.1}"
+export ORCHESTRATION_KIT_MCP_PORT="${ORCHESTRATION_KIT_MCP_PORT:-7337}"
 
-if [[ -z "${MASTER_KIT_MCP_TOKEN:-}" && -f "$PROJECT_ROOT/.mcp-token" ]]; then
-  export MASTER_KIT_MCP_TOKEN="$(cat "$PROJECT_ROOT/.mcp-token")"
+if [[ -z "${ORCHESTRATION_KIT_MCP_TOKEN:-}" && -f "$PROJECT_ROOT/.mcp-token" ]]; then
+  export ORCHESTRATION_KIT_MCP_TOKEN="$(cat "$PROJECT_ROOT/.mcp-token")"
 fi
 
-if [[ -z "${MASTER_KIT_MCP_TOKEN:-}" ]]; then
-  echo "Error: MASTER_KIT_MCP_TOKEN is required" >&2
+if [[ -z "${ORCHESTRATION_KIT_MCP_TOKEN:-}" ]]; then
+  echo "Error: ORCHESTRATION_KIT_MCP_TOKEN is required" >&2
   exit 2
 fi
 
-export MASTER_KIT_MCP_URL="http://${MASTER_KIT_MCP_HOST}:${MASTER_KIT_MCP_PORT}/mcp"
+export ORCHESTRATION_KIT_MCP_URL="http://${ORCHESTRATION_KIT_MCP_HOST}:${ORCHESTRATION_KIT_MCP_PORT}/mcp"
 CODEX_SANDBOX_NETWORK_DISABLED="${CODEX_SANDBOX_NETWORK_DISABLED:-0}"
 
 run_fallback() {
@@ -107,7 +107,7 @@ PROMPT
 
 response_file="$PROJECT_ROOT/interop/responses/${REQUEST_ID}.json"
 
-if [[ "$PREFER_CLI" -eq 1 || "${MASTER_KIT_SPAWN_TRY_CODEX:-0}" == "1" ]]; then
+if [[ "$PREFER_CLI" -eq 1 || "${ORCHESTRATION_KIT_SPAWN_TRY_CODEX:-0}" == "1" ]]; then
   if attempt_codex && [[ -f "$response_file" ]]; then
     status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$response_file" 2>/dev/null || true)"
     if [[ "$status" == "ok" ]]; then

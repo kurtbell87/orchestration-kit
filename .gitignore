@@ -14,7 +14,7 @@ interop/responses/*.json
 # Local MCP config/secrets
 .mcp.json
 .mcp-token
-.master-kit.env
+.orchestration-kit.env
 
 # MCP service logs
 !runs/mcp-logs/

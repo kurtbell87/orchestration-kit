@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .config import db_path, current_master_kit_root, current_project_root
+from .config import db_path, current_orchestration_kit_root, current_project_root
 from .schema import ensure_schema
 from .registry import load_registry, upsert_registry_project
 from .parsing import parse_run
@@ -14,11 +14,11 @@ from .parsing import parse_run
 def _insert_project(conn: sqlite3.Connection, project: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO projects(project_id, label, master_kit_root, project_root, registered_at, updated_at)
+        INSERT INTO projects(project_id, label, orchestration_kit_root, project_root, registered_at, updated_at)
         VALUES(?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id) DO UPDATE SET
           label = excluded.label,
-          master_kit_root = excluded.master_kit_root,
+          orchestration_kit_root = excluded.orchestration_kit_root,
           project_root = excluded.project_root,
           registered_at = excluded.registered_at,
           updated_at = excluded.updated_at
@@ -26,7 +26,7 @@ def _insert_project(conn: sqlite3.Connection, project: dict[str, Any]) -> None:
         (
             project["project_id"],
             project["label"],
-            project["master_kit_root"],
+            project["orchestration_kit_root"],
             project["project_root"],
             project.get("registered_at"),
             project.get("updated_at"),
@@ -45,7 +45,7 @@ def _insert_run(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
         INSERT INTO runs(
           project_id, run_id, parent_run_id, kit, phase, started_at, finished_at,
           exit_code, status, capsule_path, manifest_path, log_path, events_path,
-          cwd, project_root, master_kit_root, agent_runtime, host, pid, reasoning
+          cwd, project_root, orchestration_kit_root, agent_runtime, host, pid, reasoning
         )
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
@@ -65,7 +65,7 @@ def _insert_run(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
             run["events_path"],
             run["cwd"],
             run["project_root"],
-            run["master_kit_root"],
+            run["orchestration_kit_root"],
             run["agent_runtime"],
             run["host"],
             run["pid"],
@@ -145,9 +145,9 @@ def index_projects(
         _insert_project(conn, project)
         _delete_project_rows(conn, project["project_id"])
 
-        runs_dir = project["master_kit_root_path"] / "runs"
+        runs_dir = project["orchestration_kit_root_path"] / "runs"
         if not runs_dir.is_dir():
-            missing_roots.append(project["master_kit_root"])
+            missing_roots.append(project["orchestration_kit_root"])
             continue
 
         run_roots = sorted(
@@ -176,14 +176,14 @@ def index_projects(
 def prepare_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     for project in projects:
-        mk = Path(project["master_kit_root"]).expanduser().resolve()
+        mk = Path(project["orchestration_kit_root"]).expanduser().resolve()
         pr = Path(project["project_root"]).expanduser().resolve()
         prepared.append(
             {
                 **project,
-                "master_kit_root": str(mk),
+                "orchestration_kit_root": str(mk),
                 "project_root": str(pr),
-                "master_kit_root_path": mk,
+                "orchestration_kit_root_path": mk,
                 "project_root_path": pr,
             }
         )
@@ -195,7 +195,7 @@ def maybe_seed_registry() -> list[dict[str, Any]]:
     if projects:
         return projects
 
-    mk = current_master_kit_root()
+    mk = current_orchestration_kit_root()
     pr = current_project_root(mk)
-    upsert_registry_project(master_kit_root=mk, project_root=pr, label=pr.name)
+    upsert_registry_project(orchestration_kit_root=mk, project_root=pr, label=pr.name)
     return load_registry()

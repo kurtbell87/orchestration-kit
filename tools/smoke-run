@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Master-kit smoke run: file-ops only (no training, no long-running jobs).
+# Orchestration-kit smoke run: file-ops only (no training, no long-running jobs).
 
 set -euo pipefail
 

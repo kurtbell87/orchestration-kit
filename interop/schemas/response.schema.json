@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "master-kit/interop/response.schema.json",
+  "$id": "orchestration-kit/interop/response.schema.json",
   "title": "Interop Response",
   "type": "object",
   "additionalProperties": false,

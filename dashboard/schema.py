@@ -23,7 +23,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS projects (
           project_id TEXT PRIMARY KEY,
           label TEXT NOT NULL,
-          master_kit_root TEXT NOT NULL,
+          orchestration_kit_root TEXT NOT NULL,
           project_root TEXT NOT NULL,
           registered_at TEXT,
           updated_at TEXT
@@ -45,7 +45,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           events_path TEXT,
           cwd TEXT,
           project_root TEXT,
-          master_kit_root TEXT,
+          orchestration_kit_root TEXT,
           agent_runtime TEXT,
           host TEXT,
           pid INTEGER,

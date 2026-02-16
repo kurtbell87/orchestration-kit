@@ -91,7 +91,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if route == "/api/projects":
                 rows = load_dashboard_rows(
-                    "SELECT project_id, label, master_kit_root, project_root FROM projects ORDER BY label ASC"
+                    "SELECT project_id, label, orchestration_kit_root, project_root FROM projects ORDER BY label ASC"
                 )
                 self._write_json(HTTPStatus.OK, {"projects": rows})
                 return

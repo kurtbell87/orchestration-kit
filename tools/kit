@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Master-kit orchestrator entrypoint.
+"""Orchestration-kit orchestrator entrypoint.
 
 Usage:
   tools/kit <kit> <phase> [args...]
@@ -39,7 +39,7 @@ _SP = f"{_KIT_SD}/" if _KIT_SD != "." else ""
 
 KIT_CONFIG: dict[str, dict[str, Any]] = {
     "tdd": {
-        "cwd": REPO_ROOT / "claude-tdd-kit",
+        "cwd": REPO_ROOT / "tdd-kit",
         "script": f"./{_SP}tdd.sh",
         "truth_patterns": [
             f"{_SP}PRD.md",
@@ -56,7 +56,7 @@ KIT_CONFIG: dict[str, dict[str, Any]] = {
         ],
     },
     "research": {
-        "cwd": REPO_ROOT / "claude-research-kit",
+        "cwd": REPO_ROOT / "research-kit",
         "script": f"./{_SP}experiment.sh",
         "truth_patterns": [
             f"{_SP}QUESTIONS.md",
@@ -76,7 +76,7 @@ KIT_CONFIG: dict[str, dict[str, Any]] = {
         ],
     },
     "math": {
-        "cwd": REPO_ROOT / "claude-mathematics-kit",
+        "cwd": REPO_ROOT / "mathematics-kit",
         "script": f"./{_SP}math.sh",
         "truth_patterns": [
             f"{_SP}specs/**",
@@ -142,17 +142,17 @@ def parse_project_id(stdout: str) -> str | None:
 
 
 def dashboard_manage_project(project_root: Path) -> str | None:
-    if not env_enabled("MASTER_KIT_DASHBOARD_AUTOSTART", default=True):
+    if not env_enabled("ORCHESTRATION_KIT_DASHBOARD_AUTOSTART", default=True):
         return None
     if not DASHBOARD_TOOL.is_file():
         return None
 
-    label = os.getenv("MASTER_KIT_DASHBOARD_LABEL", project_root.name)
+    label = os.getenv("ORCHESTRATION_KIT_DASHBOARD_LABEL", project_root.name)
     register = subprocess.run(
         [
             str(DASHBOARD_TOOL),
             "register",
-            "--master-kit-root",
+            "--orchestration-kit-root",
             str(REPO_ROOT),
             "--project-root",
             str(project_root),
@@ -178,7 +178,7 @@ def dashboard_manage_project(project_root: Path) -> str | None:
             str(DASHBOARD_TOOL),
             "ensure-service",
             "--wait-seconds",
-            os.getenv("MASTER_KIT_DASHBOARD_ENSURE_WAIT_SECONDS", "1"),
+            os.getenv("ORCHESTRATION_KIT_DASHBOARD_ENSURE_WAIT_SECONDS", "1"),
         ],
         cwd=str(REPO_ROOT),
         env=os.environ.copy(),
@@ -196,7 +196,7 @@ def dashboard_manage_project(project_root: Path) -> str | None:
 
 
 def dashboard_index_project(project_id: str | None) -> None:
-    if not env_enabled("MASTER_KIT_DASHBOARD_AUTO_INDEX", default=True):
+    if not env_enabled("ORCHESTRATION_KIT_DASHBOARD_AUTO_INDEX", default=True):
         return
     if not DASHBOARD_TOOL.is_file():
         return
@@ -225,7 +225,7 @@ def run_project_root() -> Path:
 
 
 def runtime_identity() -> str:
-    raw = os.getenv("MASTER_KIT_AGENT_RUNTIME", "").strip()
+    raw = os.getenv("ORCHESTRATION_KIT_AGENT_RUNTIME", "").strip()
     if raw:
         return raw
 
@@ -366,7 +366,7 @@ def fallback_capsule(
 ) -> list[str]:
     status = "ok" if exit_code == 0 else "failed"
     lines = [
-        f"Goal: Execute {kit}.{phase} in master-kit orchestration.",
+        f"Goal: Execute {kit}.{phase} in orchestration-kit orchestration.",
         f"What happened: Command finished with exit code {exit_code}.",
         f"Current status: {status}.",
     ]
@@ -551,10 +551,10 @@ def run_phase(argv: list[str]) -> int:
     script: str = config["script"]
     project_root = run_project_root()
     dashboard_project_id = dashboard_manage_project(project_root)
-    master_kit_root = REPO_ROOT.resolve()
+    orchestration_kit_root = REPO_ROOT.resolve()
     run_context = {
         "project_root": str(project_root),
-        "master_kit_root": str(master_kit_root),
+        "orchestration_kit_root": str(orchestration_kit_root),
         "agent_runtime": runtime_identity(),
         "host": socket.gethostname(),
         "pid": os.getpid(),
@@ -597,7 +597,7 @@ def run_phase(argv: list[str]) -> int:
         {
             "RUN_ID": run_id,
             "RUN_ROOT": str(run_root),
-            "MASTER_KIT_ROOT": str(REPO_ROOT),
+            "ORCHESTRATION_KIT_ROOT": str(REPO_ROOT),
             "READ_BUDGET_STATE_DIR": str(run_root / "artifacts"),
         }
     )
@@ -680,7 +680,7 @@ def run_phase(argv: list[str]) -> int:
             "command": cmd,
             "cwd": rel_repo(cwd),
             "project_root": str(project_root),
-            "master_kit_root": str(master_kit_root),
+            "orchestration_kit_root": str(orchestration_kit_root),
             "agent_runtime": run_context["agent_runtime"],
             "host": run_context["host"],
             "pid": run_context["pid"],

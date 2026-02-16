@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Monorepo bootstrap for master-kit.
+# Monorepo bootstrap for orchestration-kit.
 #
 # This script does NOT call per-kit install.sh scripts (those do heavy
 # project-specific setup like Lean4 toolchain init).  Instead it seeds the
@@ -126,17 +126,17 @@ print_version "elan" elan --version
 if [[ "$CHECK_ONLY" -eq 0 ]]; then
   chmod +x tools/* || fail "Failed to chmod tools/*"
   chmod +x .claude/hooks/pre-tool-use.sh || fail "Failed to chmod master hook"
-  chmod +x claude-tdd-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod tdd hook"
-  chmod +x claude-research-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod research hook"
-  chmod +x claude-mathematics-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod math hook"
+  chmod +x tdd-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod tdd hook"
+  chmod +x research-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod research hook"
+  chmod +x mathematics-kit/.claude/hooks/pre-tool-use.sh || fail "Failed to chmod math hook"
 
-  for script in claude-tdd-kit/*.sh claude-research-kit/*.sh claude-mathematics-kit/*.sh; do
+  for script in tdd-kit/*.sh research-kit/*.sh mathematics-kit/*.sh; do
     chmod_if_exists "$script"
   done
 
   while IFS= read -r script; do
     chmod +x "$script" || fail "Failed to chmod $script"
-  done < <(find claude-tdd-kit/scripts claude-research-kit/scripts claude-mathematics-kit/scripts -type f -name '*.sh' 2>/dev/null)
+  done < <(find tdd-kit/scripts research-kit/scripts mathematics-kit/scripts -type f -name '*.sh' 2>/dev/null)
 
   echo "[bootstrap] executable bits refreshed"
 else
@@ -166,7 +166,7 @@ seed_kit_workspaces() {
   echo "[bootstrap] seeding kit workspaces"
 
   # ── TDD Kit ──
-  local tdd="$ROOT_DIR/claude-tdd-kit"
+  local tdd="$ROOT_DIR/tdd-kit"
   mkdir -p "$tdd/docs"
   copy_if_missing "$tdd/templates/LAST_TOUCH.md" "$tdd/LAST_TOUCH.md"
   copy_if_missing "$tdd/templates/PRD.md"        "$tdd/PRD.md"
@@ -176,7 +176,7 @@ seed_kit_workspaces() {
   fi
 
   # ── Research Kit ──
-  local research="$ROOT_DIR/claude-research-kit"
+  local research="$ROOT_DIR/research-kit"
   mkdir -p "$research/experiments" "$research/results" "$research/handoffs/completed"
   copy_if_missing "$research/templates/RESEARCH_LOG.md"  "$research/RESEARCH_LOG.md"
   copy_if_missing "$research/templates/QUESTIONS.md"      "$research/QUESTIONS.md"
@@ -187,7 +187,7 @@ seed_kit_workspaces() {
   fi
 
   # ── Mathematics Kit ──
-  local math="$ROOT_DIR/claude-mathematics-kit"
+  local math="$ROOT_DIR/mathematics-kit"
   mkdir -p "$math/specs" "$math/results"
   copy_if_missing "$math/templates/CONSTRUCTIONS.md"     "$math/CONSTRUCTIONS.md"
   copy_if_missing "$math/templates/CONSTRUCTION_LOG.md"  "$math/CONSTRUCTION_LOG.md"

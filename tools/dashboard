@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Global run dashboard for master-kit clones.
+"""Global run dashboard for orchestration-kit clones.
 
 Thin wrapper — all logic lives in the ``dashboard`` package.
 This file re-exports public symbols so that ``tests/test_dashboard.py``
 (which loads this file via SourceFileLoader) continues to work.
 
 Usage:
-  tools/dashboard register [--master-kit-root PATH] [--project-root PATH] [--label LABEL]
+  tools/dashboard register [--orchestration-kit-root PATH] [--project-root PATH] [--label LABEL]
   tools/dashboard unregister --project-id ID
   tools/dashboard projects
   tools/dashboard index [--project-id ID]
@@ -38,7 +38,7 @@ from dashboard import (  # noqa: E402, F401
     service_log_path,
     rel_to,
     coerce_path,
-    current_master_kit_root,
+    current_orchestration_kit_root,
     current_project_root,
     project_id_for,
     load_registry,

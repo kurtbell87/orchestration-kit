@@ -1,0 +1,18 @@
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Reference / working files
+inspiration_conversation.md
+research-kit-README.md
+
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Experiment outputs (tracked per-project, not in the kit itself)
+# Uncomment these if you want to ignore results in your project:
+# results/
+# experiments/

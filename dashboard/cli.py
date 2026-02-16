@@ -18,7 +18,7 @@ from .config import (
     service_state_path,
     service_log_path,
     coerce_path,
-    current_master_kit_root,
+    current_orchestration_kit_root,
     current_project_root,
 )
 from .registry import load_registry, upsert_registry_project, remove_registry_project
@@ -28,16 +28,16 @@ from .service import load_service_state, save_service_state, pid_alive, healthch
 from .server import DashboardHandler, DashboardServer
 
 def cmd_register(args: argparse.Namespace) -> int:
-    default_mk = current_master_kit_root()
-    master_kit_root = coerce_path(args.master_kit_root, default_mk)
-    project_root = coerce_path(args.project_root, current_project_root(master_kit_root))
+    default_mk = current_orchestration_kit_root()
+    orchestration_kit_root = coerce_path(args.orchestration_kit_root, default_mk)
+    project_root = coerce_path(args.project_root, current_project_root(orchestration_kit_root))
 
-    if not (master_kit_root / "tools" / "kit").is_file():
-        print(f"Error: not a master-kit root: {master_kit_root}")
+    if not (orchestration_kit_root / "tools" / "kit").is_file():
+        print(f"Error: not a orchestration-kit root: {orchestration_kit_root}")
         return 2
 
     record = upsert_registry_project(
-        master_kit_root=master_kit_root,
+        orchestration_kit_root=orchestration_kit_root,
         project_root=project_root,
         label=args.label,
     )
@@ -186,12 +186,12 @@ def cmd_ensure_service(args: argparse.Namespace) -> int:
 
 def cmd_service_status(args: argparse.Namespace) -> int:
     state = load_service_state()
-    host = args.host or (state.get("host") if isinstance(state.get("host"), str) else os.getenv("MASTER_KIT_DASHBOARD_HOST", "127.0.0.1"))
+    host = args.host or (state.get("host") if isinstance(state.get("host"), str) else os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOST", "127.0.0.1"))
     port_raw = args.port if args.port else state.get("port")
     try:
         port = int(port_raw)
     except (TypeError, ValueError):
-        port = int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340"))
+        port = int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_PORT", "7340"))
 
     running = healthcheck(host=host, port=port)
     pid = state.get("pid") if isinstance(state.get("pid"), int) else None
@@ -213,12 +213,12 @@ def cmd_service_status(args: argparse.Namespace) -> int:
 def cmd_stop_service(args: argparse.Namespace) -> int:
     state = load_service_state()
     pid = state.get("pid") if isinstance(state.get("pid"), int) else None
-    host = state.get("host") if isinstance(state.get("host"), str) else os.getenv("MASTER_KIT_DASHBOARD_HOST", "127.0.0.1")
+    host = state.get("host") if isinstance(state.get("host"), str) else os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOST", "127.0.0.1")
     port_raw = state.get("port")
     try:
         port = int(port_raw)
     except (TypeError, ValueError):
-        port = int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340"))
+        port = int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_PORT", "7340"))
 
     stopped_pid = False
     if isinstance(pid, int) and pid_alive(pid):
@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd")
 
     p_register = sub.add_parser("register", help="Register or update a project for global indexing")
-    p_register.add_argument("--master-kit-root", default=None)
+    p_register.add_argument("--orchestration-kit-root", default=None)
     p_register.add_argument("--project-root", default=None)
     p_register.add_argument("--label", default=None)
     p_register.set_defaults(func=cmd_register)
@@ -314,8 +314,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.set_defaults(func=cmd_index)
 
     p_ensure = sub.add_parser("ensure-service", help="Ensure the dashboard HTTP service is running")
-    p_ensure.add_argument("--host", default=os.getenv("MASTER_KIT_DASHBOARD_HOST", "127.0.0.1"))
-    p_ensure.add_argument("--port", type=int, default=int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340")))
+    p_ensure.add_argument("--host", default=os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOST", "127.0.0.1"))
+    p_ensure.add_argument("--port", type=int, default=int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_PORT", "7340")))
     p_ensure.add_argument("--wait-seconds", type=int, default=5)
     p_ensure.set_defaults(func=cmd_ensure_service)
 
@@ -329,8 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop.set_defaults(func=cmd_stop_service)
 
     p_serve = sub.add_parser("serve", help="Run HTTP dashboard server")
-    p_serve.add_argument("--host", default=os.getenv("MASTER_KIT_DASHBOARD_HOST", "127.0.0.1"))
-    p_serve.add_argument("--port", type=int, default=int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340")))
+    p_serve.add_argument("--host", default=os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOST", "127.0.0.1"))
+    p_serve.add_argument("--port", type=int, default=int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_PORT", "7340")))
     p_serve.add_argument("--project-id", default=None)
     p_serve.set_defaults(func=cmd_serve)
 
@@ -339,8 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str]) -> int:
     if not argv:
-        host = os.getenv("MASTER_KIT_DASHBOARD_HOST", "127.0.0.1")
-        port = int(os.getenv("MASTER_KIT_DASHBOARD_PORT", "7340"))
+        host = os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOST", "127.0.0.1")
+        port = int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_PORT", "7340"))
         ensure_args = argparse.Namespace(host=host, port=port, wait_seconds=5)
         rc = cmd_ensure_service(ensure_args)
         status_args = argparse.Namespace(host=host, port=port)

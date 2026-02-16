@@ -4,8 +4,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LEAN_SUMMARY="$ROOT_DIR/claude-mathematics-kit/scripts/lean-error-summarize.sh"
-LEAN_CLASSIFY="$ROOT_DIR/claude-mathematics-kit/scripts/lean-error-classify.sh"
+LEAN_SUMMARY="$ROOT_DIR/mathematics-kit/scripts/lean-error-summarize.sh"
+LEAN_CLASSIFY="$ROOT_DIR/mathematics-kit/scripts/lean-error-classify.sh"
 
 usage() {
   cat <<USAGE

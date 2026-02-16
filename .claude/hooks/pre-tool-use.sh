@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL_NAME="${CLAUDE_TOOL_NAME:-}"
 TOOL_INPUT="${CLAUDE_TOOL_INPUT:-}"
 export MASTER_HOOK_ACTIVE=1
-export MASTER_KIT_ROOT="${MASTER_KIT_ROOT:-$ROOT_DIR}"
+export ORCHESTRATION_KIT_ROOT="${ORCHESTRATION_KIT_ROOT:-$ROOT_DIR}"
 
 debug_master_hook() {
   if [[ "${MASTER_HOOK_DEBUG:-0}" == "1" ]]; then
@@ -101,7 +101,7 @@ read_budget_state_file() {
   local key
   key="${RUN_ID:-${PARENT_RUN_ID:-$PWD}}"
   key="$(printf '%s' "$key" | tr '/ :\n\t' '_')"
-  printf '%s/master-kit-read-budget-%s.json' "$state_dir" "$key"
+  printf '%s/orchestration-kit-read-budget-%s.json' "$state_dir" "$key"
 }
 
 run_hook_if_exists() {
@@ -247,15 +247,15 @@ apply_read_budget_guardrail
 
 # Phase-specific dispatch (reuse existing kit rules verbatim).
 if [[ -n "${TDD_PHASE:-}" ]]; then
-  run_hook_if_exists "$MASTER_KIT_ROOT/claude-tdd-kit/.claude/hooks/pre-tool-use.sh" "tdd"
+  run_hook_if_exists "$ORCHESTRATION_KIT_ROOT/tdd-kit/.claude/hooks/pre-tool-use.sh" "tdd"
 fi
 
 if [[ -n "${EXP_PHASE:-}" ]]; then
-  run_hook_if_exists "$MASTER_KIT_ROOT/claude-research-kit/.claude/hooks/pre-tool-use.sh" "research"
+  run_hook_if_exists "$ORCHESTRATION_KIT_ROOT/research-kit/.claude/hooks/pre-tool-use.sh" "research"
 fi
 
 if [[ -n "${MATH_PHASE:-}" ]]; then
-  run_hook_if_exists "$MASTER_KIT_ROOT/claude-mathematics-kit/.claude/hooks/pre-tool-use.sh" "math"
+  run_hook_if_exists "$ORCHESTRATION_KIT_ROOT/mathematics-kit/.claude/hooks/pre-tool-use.sh" "math"
 fi
 
 exit 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""High-trust validation harness for master-kit + dashboard.
+"""High-trust validation harness for orchestration-kit + dashboard.
 
 This script creates two toy greenfield projects, runs a non-trivial orchestration
 scenario across all three kits, verifies accountability artifacts, and validates
@@ -100,7 +100,7 @@ def run_json(
 
 def load_project_env(project_root: Path) -> dict[str, str]:
     probe = run_cmd(
-        ["bash", "-lc", "source .master-kit.env >/dev/null 2>&1; env -0"],
+        ["bash", "-lc", "source .orchestration-kit.env >/dev/null 2>&1; env -0"],
         cwd=project_root,
         env=os.environ.copy(),
     )
@@ -138,23 +138,23 @@ def check_prereqs() -> dict[str, str]:
 
 
 def kit_tool(project_root: Path) -> Path:
-    return project_root / "master-kit" / "tools" / "kit"
+    return project_root / "orchestration-kit" / "tools" / "kit"
 
 
 def pump_tool(project_root: Path) -> Path:
-    return project_root / "master-kit" / "tools" / "pump"
+    return project_root / "orchestration-kit" / "tools" / "pump"
 
 
 def validate_capsules_tool(project_root: Path) -> Path:
-    return project_root / "master-kit" / "tools" / "validate-capsules"
+    return project_root / "orchestration-kit" / "tools" / "validate-capsules"
 
 
 def validate_manifests_tool(project_root: Path) -> Path:
-    return project_root / "master-kit" / "tools" / "validate-manifests"
+    return project_root / "orchestration-kit" / "tools" / "validate-manifests"
 
 
 def hook_path(project_root: Path) -> Path:
-    return project_root / "master-kit" / ".claude" / "hooks" / "pre-tool-use.sh"
+    return project_root / "orchestration-kit" / ".claude" / "hooks" / "pre-tool-use.sh"
 
 
 def new_request_id(label: str) -> str:
@@ -222,7 +222,7 @@ def pump_request(*, project_root: Path, env: dict[str, str], request_id: str) ->
 
 
 def verify_run_artifacts(project_root: Path, run_id: str) -> dict[str, Any]:
-    run_root = project_root / "master-kit" / "runs" / run_id
+    run_root = project_root / "orchestration-kit" / "runs" / run_id
     if not run_root.is_dir():
         raise ValidationError(f"missing run root: {run_root}")
     capsules = sorted((run_root / "capsules").glob("*.md"))
@@ -245,12 +245,12 @@ def run_validators(project_root: Path, env: dict[str, str], run_ids: list[str]) 
     roots = [f"runs/{rid}" for rid in sorted(set(run_ids))]
     run_cmd(
         [str(validate_capsules_tool(project_root)), *roots],
-        cwd=project_root / "master-kit",
+        cwd=project_root / "orchestration-kit",
         env=env,
     )
     run_cmd(
         [str(validate_manifests_tool(project_root)), "--check-files", *roots],
-        cwd=project_root / "master-kit",
+        cwd=project_root / "orchestration-kit",
         env=env,
     )
     return {"validated_runs": roots}
@@ -271,7 +271,7 @@ def guardrail_block_probe(project_root: Path, env: dict[str, str]) -> dict[str, 
                 "READ_BUDGET_STATE_DIR": str(tmp),
             }
         )
-        proc = run_cmd([str(hook_path(project_root))], cwd=project_root / "master-kit", env=probe_env, check=False)
+        proc = run_cmd([str(hook_path(project_root))], cwd=project_root / "orchestration-kit", env=probe_env, check=False)
         blocked = proc.returncode != 0 and "BLOCKED: Read of large file" in proc.stderr
         return {
             "blocked": blocked,
@@ -299,14 +299,14 @@ def run_dashboard_checks(
     dashboard_port: int,
 ) -> dict[str, Any]:
     env_dash = os.environ.copy()
-    env_dash["MASTER_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+    env_dash["ORCHESTRATION_KIT_DASHBOARD_HOME"] = str(dashboard_home)
 
     reg_a = run_json(
         [
             str(DASHBOARD),
             "register",
-            "--master-kit-root",
-            str(project_a / "master-kit"),
+            "--orchestration-kit-root",
+            str(project_a / "orchestration-kit"),
             "--project-root",
             str(project_a),
             "--label",
@@ -319,8 +319,8 @@ def run_dashboard_checks(
         [
             str(DASHBOARD),
             "register",
-            "--master-kit-root",
-            str(project_b / "master-kit"),
+            "--orchestration-kit-root",
+            str(project_b / "orchestration-kit"),
             "--project-root",
             str(project_b),
             "--label",
@@ -438,7 +438,7 @@ def run_orchestration(
     report: dict[str, Any],
 ) -> dict[str, Any]:
     project_env = env.copy()
-    project_env["MASTER_KIT_AGENT_RUNTIME"] = f"science-validation-{profile}"
+    project_env["ORCHESTRATION_KIT_AGENT_RUNTIME"] = f"science-validation-{profile}"
 
     if profile == "live":
         parent_cmd = [str(kit_tool(project_root)), "--json", "tdd", "red", "docs/fib-library.md"]
@@ -605,8 +605,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="live = full live sub-agent phases; deterministic = status/watch-only path",
     )
     parser.add_argument("--agent-bin", choices=("claude", "codex"), default="claude")
-    parser.add_argument("--project-a", default="/tmp/master-kit-science-a")
-    parser.add_argument("--project-b", default="/tmp/master-kit-science-b")
+    parser.add_argument("--project-a", default="/tmp/orchestration-kit-science-a")
+    parser.add_argument("--project-b", default="/tmp/orchestration-kit-science-b")
     parser.add_argument("--dashboard-home", default=None)
     parser.add_argument("--dashboard-port", type=int, default=0)
     parser.add_argument("--output", default=None)
@@ -622,13 +622,13 @@ def main(argv: list[str]) -> int:
     dashboard_home = (
         Path(args.dashboard_home).expanduser().resolve()
         if args.dashboard_home
-        else Path(f"/tmp/master-kit-dashboard-science-{short_id()}").resolve()
+        else Path(f"/tmp/orchestration-kit-dashboard-science-{short_id()}").resolve()
     )
     dashboard_port = args.dashboard_port if args.dashboard_port > 0 else free_port()
     output_path = (
         Path(args.output).expanduser().resolve()
         if args.output
-        else Path(f"/tmp/master-kit-science-validation-{dt.datetime.now().strftime('%Y%m%dT%H%M%S')}.json").resolve()
+        else Path(f"/tmp/orchestration-kit-science-validation-{dt.datetime.now().strftime('%Y%m%dT%H%M%S')}.json").resolve()
     )
 
     report: dict[str, Any] = {

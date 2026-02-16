@@ -30,7 +30,7 @@ def _seed_db(db_path: str) -> None:
     ensure_schema(conn)
     conn.execute(
         """
-        INSERT INTO projects(project_id, label, master_kit_root, project_root, registered_at, updated_at)
+        INSERT INTO projects(project_id, label, orchestration_kit_root, project_root, registered_at, updated_at)
         VALUES('p1', 'test-project', '/mk', '/pr', '2026-02-14T00:00:00Z', '2026-02-14T00:00:00Z')
         """
     )
@@ -113,7 +113,7 @@ class Neo4jSyncTests(unittest.TestCase):
     def test_merge_projects(self) -> None:
         tx = MockTx()
         rows = [
-            {"project_id": "p1", "label": "test", "project_root": "/pr", "master_kit_root": "/mk"},
+            {"project_id": "p1", "label": "test", "project_root": "/pr", "orchestration_kit_root": "/mk"},
         ]
         count = _merge_projects(tx, rows)
         self.assertEqual(count, 1)

@@ -1,6 +1,6 @@
 # MCP Setup (Claude Code + Codex CLI)
 
-This guide configures the local Master-Kit MCP server for both Claude Code and Codex CLI.
+This guide configures the local Orchestration-Kit MCP server for both Claude Code and Codex CLI.
 
 ## Prerequisites
 
@@ -15,21 +15,21 @@ From repo root:
 
 ```bash
 ./install.sh
-source .master-kit.env
+source .orchestration-kit.env
 ```
 
-This bootstraps tooling, creates an MCP token, and writes `.master-kit.env`.
+This bootstraps tooling, creates an MCP token, and writes `.orchestration-kit.env`.
 
 ## 2) Set environment variables manually (alternative)
 
 From repo root:
 
 ```bash
-export MASTER_KIT_ROOT="$(pwd)"
-export MASTER_KIT_MCP_HOST="127.0.0.1"
-export MASTER_KIT_MCP_PORT="7337"
-export MASTER_KIT_MCP_MAX_OUTPUT_BYTES="32000"
-export MASTER_KIT_MCP_TOKEN="$(tools/mcp-token)"
+export ORCHESTRATION_KIT_ROOT="$(pwd)"
+export ORCHESTRATION_KIT_MCP_HOST="127.0.0.1"
+export ORCHESTRATION_KIT_MCP_PORT="7337"
+export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES="32000"
+export ORCHESTRATION_KIT_MCP_TOKEN="$(tools/mcp-token)"
 ```
 
 Persist these in your shell profile if needed.
@@ -42,7 +42,7 @@ tools/mcp-serve
 
 Expected startup line includes:
 
-- `master-kit mcp ready`
+- `orchestration-kit mcp ready`
 - URL `http://127.0.0.1:7337/mcp`
 
 ## 4) Configure Claude Code
@@ -54,7 +54,7 @@ Use project-scoped config or CLI registration (depending on your Claude version)
 ```json
 {
   "mcpServers": {
-    "master-kit": {
+    "orchestration-kit": {
       "transport": "http",
       "url": "http://127.0.0.1:7337/mcp",
       "headers": {
@@ -68,8 +68,8 @@ Use project-scoped config or CLI registration (depending on your Claude version)
 ### Option B: Claude CLI
 
 ```bash
-claude mcp add --scope project master-kit http://127.0.0.1:7337/mcp \
-  --header "Authorization: Bearer $MASTER_KIT_MCP_TOKEN"
+claude mcp add --scope project orchestration-kit http://127.0.0.1:7337/mcp \
+  --header "Authorization: Bearer $ORCHESTRATION_KIT_MCP_TOKEN"
 ```
 
 ## 5) Configure Codex CLI
@@ -77,10 +77,10 @@ claude mcp add --scope project master-kit http://127.0.0.1:7337/mcp \
 Edit `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.master_kit]
+[mcp_servers.orchestration_kit]
 url = "http://127.0.0.1:7337/mcp"
 
-[mcp_servers.master_kit.headers]
+[mcp_servers.orchestration_kit.headers]
 Authorization = "Bearer YOUR_TOKEN_HERE"
 ```
 
@@ -90,8 +90,8 @@ Replace `YOUR_TOKEN_HERE` with your token value.
 
 Use either Claude or Codex MCP client to call:
 
-- `master.run` with `{"kit":"research","action":"status"}`
-- `master.request_create` with optional `from_phase`, for example:
+- `orchestrator.run` with `{"kit":"research","action":"status"}`
+- `orchestrator.request_create` with optional `from_phase`, for example:
   - `{"from_kit":"research","from_phase":"status","to_kit":"math","action":"math.status","run_id":"<parent_run_id>"}`
 
 Verify result contains pointers such as:
@@ -106,8 +106,8 @@ Verify result contains pointers such as:
 Wrappers execute one request and preserve MCP env:
 
 ```bash
-tools/spawn-claude-worker <request_id> [--project-root /path/to/master-kit] [--prefer-cli]
-tools/spawn-codex-worker <request_id> [--project-root /path/to/master-kit] [--prefer-cli]
+tools/spawn-claude-worker <request_id> [--project-root /path/to/orchestration-kit] [--prefer-cli]
+tools/spawn-codex-worker <request_id> [--project-root /path/to/orchestration-kit] [--prefer-cli]
 ```
 
 If direct CLI MCP invocation flags are unavailable, wrappers fallback to:
@@ -118,8 +118,8 @@ tools/pump --once --request <request_id> --json
 
 Optional toggles:
 
-- `MASTER_KIT_SPAWN_TRY_CLAUDE=1` — attempt direct Claude CLI pump call before fallback.
-- `MASTER_KIT_SPAWN_TRY_CODEX=1` — attempt direct Codex CLI pump call before fallback.
+- `ORCHESTRATION_KIT_SPAWN_TRY_CLAUDE=1` — attempt direct Claude CLI pump call before fallback.
+- `ORCHESTRATION_KIT_SPAWN_TRY_CODEX=1` — attempt direct Codex CLI pump call before fallback.
 - `CODEX_SANDBOX_NETWORK_DISABLED=1` — force Codex wrapper fallback to local `tools/pump`.
 
 ## 8) Stop server

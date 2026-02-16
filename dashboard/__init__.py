@@ -10,7 +10,7 @@ from .config import (
     service_log_path,
     rel_to,
     coerce_path,
-    current_master_kit_root,
+    current_orchestration_kit_root,
     current_project_root,
     project_id_for,
 )
@@ -75,7 +75,7 @@ __all__ = [
     "service_log_path",
     "rel_to",
     "coerce_path",
-    "current_master_kit_root",
+    "current_orchestration_kit_root",
     "current_project_root",
     "project_id_for",
     "load_registry",

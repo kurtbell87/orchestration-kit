@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "master-kit/interop/request.schema.json",
+  "$id": "orchestration-kit/interop/request.schema.json",
   "title": "Interop Request",
   "type": "object",
   "additionalProperties": false,

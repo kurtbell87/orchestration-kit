@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP MCP facade for master-kit tools."""
+"""HTTP MCP facade for orchestration-kit tools."""
 
 from __future__ import annotations
 
@@ -109,8 +109,8 @@ class ServerConfig:
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "name": "master.run",
-        "description": "Run a master-kit action via tools/kit and return pointer-only paths.",
+        "name": "orchestrator.run",
+        "description": "Run a orchestration-kit action via tools/kit and return pointer-only paths.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -125,7 +125,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "master.request_create",
+        "name": "orchestrator.request_create",
         "description": "Create an interop request file via tools/kit request.",
         "inputSchema": {
             "type": "object",
@@ -155,7 +155,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "master.pump",
+        "name": "orchestrator.pump",
         "description": "Execute one request (by id or queue front) via tools/pump.",
         "inputSchema": {
             "type": "object",
@@ -168,7 +168,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "master.run_info",
+        "name": "orchestrator.run_info",
         "description": "Return pointer summary for a run.",
         "inputSchema": {
             "type": "object",
@@ -180,7 +180,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "master.query_log",
+        "name": "orchestrator.query_log",
         "description": "Return bounded log snippet via tools/query-log.",
         "inputSchema": {
             "type": "object",
@@ -214,7 +214,7 @@ class MasterKitFacade:
         timeout_seconds: int = 900,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
-        env["MASTER_KIT_ROOT"] = str(self.root)
+        env["ORCHESTRATION_KIT_ROOT"] = str(self.root)
         if extra_env:
             env.update(extra_env)
 
@@ -244,7 +244,7 @@ class MasterKitFacade:
             parsed = parse_json_tail(proc.stdout)
         except ValueError as exc:
             tail = cap_text_bytes(proc.stdout + "\n" + proc.stderr, self.config.max_output_bytes)
-            raise MCPToolError(f"master.run failed to parse output: {exc}; tail={tail}") from exc
+            raise MCPToolError(f"orchestrator.run failed to parse output: {exc}; tail={tail}") from exc
 
         paths = parsed.get("paths", {}) if isinstance(parsed.get("paths"), dict) else {}
         result = {
@@ -341,12 +341,12 @@ class MasterKitFacade:
             parsed = parse_json_tail(proc.stdout)
         except ValueError as exc:
             tail = cap_text_bytes(proc.stdout + "\n" + proc.stderr, self.config.max_output_bytes)
-            raise MCPToolError(f"master.request_create failed to parse output: {exc}; tail={tail}") from exc
+            raise MCPToolError(f"orchestrator.request_create failed to parse output: {exc}; tail={tail}") from exc
 
         request_id = parsed.get("request_id")
         request_path = parsed.get("path")
         if not isinstance(request_id, str) or not isinstance(request_path, str):
-            raise MCPToolError("master.request_create produced invalid pointer output")
+            raise MCPToolError("orchestrator.request_create produced invalid pointer output")
 
         return {
             "request_id": request_id,
@@ -371,7 +371,7 @@ class MasterKitFacade:
             parsed = parse_json_tail(proc.stdout)
         except ValueError:
             message = cap_text_bytes(proc.stderr or proc.stdout, self.config.max_output_bytes)
-            raise MCPToolError(f"master.pump failed: {message}") from None
+            raise MCPToolError(f"orchestrator.pump failed: {message}") from None
 
         return {
             "response_path": parsed.get("response_path"),
@@ -429,7 +429,7 @@ class MasterKitFacade:
         try:
             resolved.relative_to(self.root.resolve())
         except ValueError as exc:
-            raise ValueError("path must resolve inside MASTER_KIT_ROOT") from exc
+            raise ValueError("path must resolve inside ORCHESTRATION_KIT_ROOT") from exc
         return resolved
 
     def _tool_query_log(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -470,15 +470,15 @@ class MasterKitFacade:
             raise ValueError("arguments must be an object")
 
         with self._lock:
-            if name == "master.run":
+            if name == "orchestrator.run":
                 return self._tool_run(arguments)
-            if name == "master.request_create":
+            if name == "orchestrator.request_create":
                 return self._tool_request_create(arguments)
-            if name == "master.pump":
+            if name == "orchestrator.pump":
                 return self._tool_pump(arguments)
-            if name == "master.run_info":
+            if name == "orchestrator.run_info":
                 return self._tool_run_info(arguments)
-            if name == "master.query_log":
+            if name == "orchestrator.query_log":
                 return self._tool_query_log(arguments)
 
         raise ValueError(f"unknown tool: {name}")
@@ -494,7 +494,7 @@ class MCPServer(ThreadingHTTPServer):
 
 
 class MCPHandler(BaseHTTPRequestHandler):
-    server_version = "master-kit-mcp/0.1"
+    server_version = "orchestration-kit-mcp/0.1"
 
     @property
     def typed_server(self) -> MCPServer:
@@ -608,7 +608,7 @@ class MCPHandler(BaseHTTPRequestHandler):
                 {
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
-                        "name": "master-kit-mcp",
+                        "name": "orchestration-kit-mcp",
                         "version": "0.1.0",
                     },
                     "capabilities": {"tools": {}},
@@ -652,23 +652,23 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 def load_config(argv: list[str]) -> ServerConfig:
     parser = argparse.ArgumentParser(prog="mcp/server.py")
-    parser.add_argument("--root", default=os.getenv("MASTER_KIT_ROOT"))
-    parser.add_argument("--host", default=os.getenv("MASTER_KIT_MCP_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=env_int("MASTER_KIT_MCP_PORT", 7337))
-    parser.add_argument("--token", default=os.getenv("MASTER_KIT_MCP_TOKEN"))
-    parser.add_argument("--max-output-bytes", type=int, default=env_int("MASTER_KIT_MCP_MAX_OUTPUT_BYTES", 32000))
-    parser.add_argument("--log-dir", default=os.getenv("MASTER_KIT_MCP_LOG_DIR", "runs/mcp-logs"))
+    parser.add_argument("--root", default=os.getenv("ORCHESTRATION_KIT_ROOT"))
+    parser.add_argument("--host", default=os.getenv("ORCHESTRATION_KIT_MCP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=env_int("ORCHESTRATION_KIT_MCP_PORT", 7337))
+    parser.add_argument("--token", default=os.getenv("ORCHESTRATION_KIT_MCP_TOKEN"))
+    parser.add_argument("--max-output-bytes", type=int, default=env_int("ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES", 32000))
+    parser.add_argument("--log-dir", default=os.getenv("ORCHESTRATION_KIT_MCP_LOG_DIR", "runs/mcp-logs"))
 
     args = parser.parse_args(argv)
 
     if not args.root:
-        raise SystemExit("MASTER_KIT_ROOT is required (or --root)")
+        raise SystemExit("ORCHESTRATION_KIT_ROOT is required (or --root)")
     if not args.token:
-        raise SystemExit("MASTER_KIT_MCP_TOKEN is required (or --token)")
+        raise SystemExit("ORCHESTRATION_KIT_MCP_TOKEN is required (or --token)")
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
-        raise SystemExit(f"MASTER_KIT_ROOT does not exist: {root}")
+        raise SystemExit(f"ORCHESTRATION_KIT_ROOT does not exist: {root}")
 
     log_dir = Path(args.log_dir)
     if not log_dir.is_absolute():
@@ -692,7 +692,7 @@ def main(argv: list[str]) -> int:
     server = MCPServer((config.host, config.port), config)
 
     print(
-        f"master-kit mcp ready url=http://{config.host}:{config.port}/mcp "
+        f"orchestration-kit mcp ready url=http://{config.host}:{config.port}/mcp "
         f"root={config.root} max_output_bytes={config.max_output_bytes}",
         flush=True,
     )

@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MASTER_HOOK = ROOT / ".claude" / "hooks" / "pre-tool-use.sh"
-TDD_HOOK = ROOT / "claude-tdd-kit" / ".claude" / "hooks" / "pre-tool-use.sh"
+TDD_HOOK = ROOT / "tdd-kit" / ".claude" / "hooks" / "pre-tool-use.sh"
 
 
 class HookReentryGuardTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class HookReentryGuardTests(unittest.TestCase):
             "TDD_PHASE",
             "EXP_PHASE",
             "MATH_PHASE",
-            "MASTER_KIT_ROOT",
+            "ORCHESTRATION_KIT_ROOT",
             "MASTER_HOOK_ACTIVE",
             "MASTER_HOOK_DEBUG",
         ):
@@ -44,9 +44,9 @@ class HookReentryGuardTests(unittest.TestCase):
             check=False,
         )
 
-    def test_no_master_kit_reentry(self) -> None:
+    def test_no_orchestration_kit_reentry(self) -> None:
         shared_env = {
-            "MASTER_KIT_ROOT": str(ROOT),
+            "ORCHESTRATION_KIT_ROOT": str(ROOT),
             "MASTER_HOOK_DEBUG": "1",
             "TDD_PHASE": "green",
         }

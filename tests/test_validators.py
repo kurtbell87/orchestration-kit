@@ -77,7 +77,7 @@ class ManifestValidatorTests(unittest.TestCase):
                     "finished_at": "2026-02-13T00:00:01Z",
                     "exit_code": 0,
                     "command": ["./experiment.sh", "status"],
-                    "cwd": "claude-research-kit",
+                    "cwd": "research-kit",
                 },
                 "artifact_index": {
                     "tracked": [

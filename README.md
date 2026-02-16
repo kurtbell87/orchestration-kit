@@ -1,10 +1,10 @@
-# Master-Kit
+# Orchestration-Kit
 
-Master-Kit is a monorepo orchestrator for three domain kits:
+Orchestration-Kit is a monorepo orchestrator for three domain kits:
 
-- `claude-tdd-kit`
-- `claude-research-kit`
-- `claude-mathematics-kit`
+- `tdd-kit`
+- `research-kit`
+- `mathematics-kit`
 
 It adds shared run orchestration, interop handoffs, anti-bloat guardrails, and an HTTP MCP server without replacing the kit-specific workflows.
 
@@ -13,7 +13,7 @@ It adds shared run orchestration, interop handoffs, anti-bloat guardrails, and a
 - Unified run orchestration via `tools/kit`
 - Interop request/response queue via `tools/pump`
 - Pointer-first observability artifacts in `runs/<run_id>/...`
-- Project-aware run metadata (`project_root`, `master_kit_root`, runtime host/pid attribution)
+- Project-aware run metadata (`project_root`, `orchestration_kit_root`, runtime host/pid attribution)
 - Master hook enforcement across TDD, Research, and Math phases
 - Bounded log querying via `tools/query-log`
 - Local authenticated MCP server for Claude Code and Codex CLI
@@ -29,13 +29,13 @@ It adds shared run orchestration, interop handoffs, anti-bloat guardrails, and a
 ## Repository Layout
 
 ```text
-master-kit/
-  .claude/                  # master hook + shared Claude settings
-  claude-tdd-kit/           # TDD kit (standalone-capable)
-  claude-research-kit/      # Research kit (standalone-capable)
-  claude-mathematics-kit/   # Lean math kit (standalone-capable)
+orchestration-kit/
+  .claude/                  # orchestrator hook + shared Claude settings
+  tdd-kit/           # TDD kit (standalone-capable)
+  research-kit/      # Research kit (standalone-capable)
+  mathematics-kit/   # Lean math kit (standalone-capable)
   docs/
-    PRD_MASTER_KIT.md
+    PRD_ORCHESTRATION_KIT.md
     MCP_SETUP.md
   interop/
     requests/
@@ -78,10 +78,10 @@ master-kit/
 Greenfield example — clone, install, and observe runs in real time:
 
 ```bash
-git clone https://github.com/kurtbell87/master-kit.git my-project
+git clone https://github.com/kurtbell87/orchestration-kit.git my-project
 cd my-project
 ./install.sh
-source .master-kit.env
+source .orchestration-kit.env
 ```
 
 1. One-command install/bootstrap:
@@ -93,7 +93,7 @@ source .master-kit.env
 2. Load MCP environment:
 
 ```bash
-source .master-kit.env
+source .orchestration-kit.env
 ```
 
 3. Start the dashboard (auto-registers the current project):
@@ -105,7 +105,7 @@ tools/dashboard serve --port 7340
 4. In a second terminal, kick off a run:
 
 ```bash
-source .master-kit.env
+source .orchestration-kit.env
 tools/kit --json tdd red docs/my-feature.md
 ```
 
@@ -150,7 +150,7 @@ tools/kit --json math status
 
 Each run produces pointers under `runs/<run_id>/`.
 
-Run manifests/events also record attribution metadata (project root, master-kit root, runtime, host, pid), enabling global multi-project indexing.
+Run manifests/events also record attribution metadata (project root, orchestration-kit root, runtime, host, pid), enabling global multi-project indexing.
 
 ### Create and execute an interop request
 
@@ -186,8 +186,8 @@ Requests are not restricted by source/target pair: any kit phase can route to an
 Register one or more cloned projects:
 
 ```bash
-tools/dashboard register --master-kit-root /path/to/project-a/master-kit --project-root /path/to/project-a
-tools/dashboard register --master-kit-root /path/to/project-b/master-kit --project-root /path/to/project-b
+tools/dashboard register --orchestration-kit-root /path/to/project-a/orchestration-kit --project-root /path/to/project-a
+tools/dashboard register --orchestration-kit-root /path/to/project-b/orchestration-kit --project-root /path/to/project-b
 tools/dashboard projects
 ```
 
@@ -226,17 +226,17 @@ tools/dashboard unregister --project-id <project_id>
 
 Dashboard state location:
 
-- default: `~/.master-kit-dashboard`
-- env override: `MASTER_KIT_DASHBOARD_HOME=/path/to/state`
-- fallback when home is not writable: `/tmp/master-kit-dashboard`
+- default: `~/.orchestration-kit-dashboard`
+- env override: `ORCHESTRATION_KIT_DASHBOARD_HOME=/path/to/state`
+- fallback when home is not writable: `/tmp/orchestration-kit-dashboard`
 
 Dashboard server env defaults:
 
-- `MASTER_KIT_DASHBOARD_HOST` (default `127.0.0.1`)
-- `MASTER_KIT_DASHBOARD_PORT` (default `7340`)
-- `MASTER_KIT_DASHBOARD_AUTOSTART` (default `1`; set `0` to disable auto-ensure)
-- `MASTER_KIT_DASHBOARD_AUTO_INDEX` (default `1`; set `0` to disable auto-index refresh)
-- `MASTER_KIT_DASHBOARD_ENSURE_WAIT_SECONDS` (default `1` for auto paths)
+- `ORCHESTRATION_KIT_DASHBOARD_HOST` (default `127.0.0.1`)
+- `ORCHESTRATION_KIT_DASHBOARD_PORT` (default `7340`)
+- `ORCHESTRATION_KIT_DASHBOARD_AUTOSTART` (default `1`; set `0` to disable auto-ensure)
+- `ORCHESTRATION_KIT_DASHBOARD_AUTO_INDEX` (default `1`; set `0` to disable auto-index refresh)
+- `ORCHESTRATION_KIT_DASHBOARD_ENSURE_WAIT_SECONDS` (default `1` for auto paths)
 
 Dashboard API endpoints:
 
@@ -263,8 +263,8 @@ tools/query-log grep 'BLOCKED:' runs/<run_id>/logs/research_status.log
 ### Start server
 
 ```bash
-export MASTER_KIT_ROOT="$(pwd)"
-export MASTER_KIT_MCP_TOKEN="$(tools/mcp-token)"
+export ORCHESTRATION_KIT_ROOT="$(pwd)"
+export ORCHESTRATION_KIT_MCP_TOKEN="$(tools/mcp-token)"
 tools/mcp-serve
 ```
 
@@ -274,11 +274,11 @@ Default endpoint:
 
 ### Exposed MCP tools
 
-- `master.run`
-- `master.request_create`
-- `master.pump`
-- `master.run_info`
-- `master.query_log`
+- `orchestrator.run`
+- `orchestrator.request_create`
+- `orchestrator.pump`
+- `orchestrator.run_info`
+- `orchestrator.query_log`
 
 ### Worker wrappers
 
@@ -287,14 +287,14 @@ Default endpoint:
 
 Wrapper options:
 
-- `--project-root /path/to/master-kit`
+- `--project-root /path/to/orchestration-kit`
 - `--prefer-cli`
 
 Wrappers fallback to `tools/pump --once --request <request_id> --json` when direct CLI MCP invocation flags are unavailable.
 CLI-attempt toggles:
 
-- `MASTER_KIT_SPAWN_TRY_CLAUDE=1`
-- `MASTER_KIT_SPAWN_TRY_CODEX=1`
+- `ORCHESTRATION_KIT_SPAWN_TRY_CLAUDE=1`
+- `ORCHESTRATION_KIT_SPAWN_TRY_CODEX=1`
 - `CODEX_SANDBOX_NETWORK_DISABLED=1` forces codex wrapper fallback to pump.
 
 See full setup details in `docs/MCP_SETUP.md`.
@@ -331,11 +331,11 @@ python3 -m unittest tests.test_mcp_server -v
 tools/smoke-run
 ```
 
-CI workflow: `.github/workflows/master-kit-smoke.yml`
+CI workflow: `.github/workflows/orchestration-kit-smoke.yml`
 
 ## Troubleshooting
 
-- `MASTER_KIT_MCP_TOKEN is required`: set token with `export MASTER_KIT_MCP_TOKEN="$(tools/mcp-token)"`.
+- `ORCHESTRATION_KIT_MCP_TOKEN is required`: set token with `export ORCHESTRATION_KIT_MCP_TOKEN="$(tools/mcp-token)"`.
 - MCP tools unavailable in client: verify project/server MCP config points to `http://127.0.0.1:7337/mcp` and uses the same bearer token.
 - Request pump fails with missing request: confirm file exists under `interop/requests/<request_id>.json`.
 - Validation failures: inspect `runs/<run_id>/capsules/` and `runs/<run_id>/manifests/` first; do not start with full logs.
@@ -348,16 +348,16 @@ CI workflow: `.github/workflows/master-kit-smoke.yml`
 
 ## Documentation
 
-- Product requirements: `docs/PRD_MASTER_KIT.md`
+- Product requirements: `docs/PRD_ORCHESTRATION_KIT.md`
 - MCP client/server setup: `docs/MCP_SETUP.md`
 - Full validation harness details: `docs/SCIENCE_VALIDATION.md`
 
 ## Docs Index
 
 - Root overview: `README.md`
-- Master PRD: `docs/PRD_MASTER_KIT.md`
+- Master PRD: `docs/PRD_ORCHESTRATION_KIT.md`
 - MCP setup: `docs/MCP_SETUP.md`
 - Science validation: `docs/SCIENCE_VALIDATION.md`
-- TDD kit: `claude-tdd-kit/README.md`
-- Research kit: `claude-research-kit/README.md`
-- Mathematics kit: `claude-mathematics-kit/README.md`
+- TDD kit: `tdd-kit/README.md`
+- Research kit: `research-kit/README.md`
+- Mathematics kit: `mathematics-kit/README.md`

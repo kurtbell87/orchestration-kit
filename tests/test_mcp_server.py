@@ -67,9 +67,9 @@ class MCPServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.proc = None
-        cls.max_output_bytes = int(os.getenv("MASTER_KIT_MCP_MAX_OUTPUT_BYTES", "320"))
-        external_url = os.getenv("MASTER_KIT_TEST_EXTERNAL_MCP_URL")
-        external_token = os.getenv("MASTER_KIT_MCP_TOKEN")
+        cls.max_output_bytes = int(os.getenv("ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES", "320"))
+        external_url = os.getenv("ORCHESTRATION_KIT_TEST_EXTERNAL_MCP_URL")
+        external_token = os.getenv("ORCHESTRATION_KIT_MCP_TOKEN")
 
         if external_url and external_token:
             cls.client = MCPClient(url=external_url, token=external_token)
@@ -80,12 +80,12 @@ class MCPServerTests(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
-                "MASTER_KIT_ROOT": str(ROOT),
-                "MASTER_KIT_MCP_HOST": "127.0.0.1",
-                "MASTER_KIT_MCP_PORT": str(cls.port),
-                "MASTER_KIT_MCP_TOKEN": cls.token,
-                "MASTER_KIT_MCP_MAX_OUTPUT_BYTES": str(cls.max_output_bytes),
-                "MASTER_KIT_DASHBOARD_AUTOSTART": "0",
+                "ORCHESTRATION_KIT_ROOT": str(ROOT),
+                "ORCHESTRATION_KIT_MCP_HOST": "127.0.0.1",
+                "ORCHESTRATION_KIT_MCP_PORT": str(cls.port),
+                "ORCHESTRATION_KIT_MCP_TOKEN": cls.token,
+                "ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES": str(cls.max_output_bytes),
+                "ORCHESTRATION_KIT_DASHBOARD_AUTOSTART": "0",
             }
         )
 
@@ -104,7 +104,7 @@ class MCPServerTests(unittest.TestCase):
             line = ""
             if cls.proc.stdout is not None:
                 line = cls.proc.stdout.readline()
-            if "master-kit mcp ready" in line:
+            if "orchestration-kit mcp ready" in line:
                 ready = True
                 break
             if cls.proc.poll() is not None:
@@ -140,7 +140,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertIn("result", init_body)
 
         run_result, run = self.client.call_tool(
-            name="master.run",
+            name="orchestrator.run",
             arguments={
                 "kit": "research",
                 "action": "status",
@@ -156,7 +156,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertNotIn("stderr", run)
 
         request_result, request = self.client.call_tool(
-            name="master.request_create",
+            name="orchestrator.request_create",
             arguments={
                 "from_kit": "research",
                 "to_kit": "research",
@@ -177,7 +177,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertTrue(str(request.get("request_path", "")).startswith("interop/requests/"))
 
         pump_result, pump = self.client.call_tool(
-            name="master.pump",
+            name="orchestrator.pump",
             arguments={
                 "mode": "once",
                 "request_id": request["request_id"],
@@ -194,7 +194,7 @@ class MCPServerTests(unittest.TestCase):
         self.assertIn("manifest_path", response_payload)
 
         run_info_result, run_info = self.client.call_tool(
-            name="master.run_info",
+            name="orchestrator.run_info",
             arguments={"run_id": "latest"},
         )
         self._assert_tool_text_bound(run_info_result)
@@ -204,7 +204,7 @@ class MCPServerTests(unittest.TestCase):
 
         log_path = run_info["logs"][0] if run_info["logs"] else run["log_paths"][0]
         query_result, query = self.client.call_tool(
-            name="master.query_log",
+            name="orchestrator.query_log",
             arguments={
                 "path": log_path,
                 "mode": "tail",
@@ -221,7 +221,7 @@ class MCPServerTests(unittest.TestCase):
         test_log.write_text("x" * 5000 + "\n", encoding="utf-8")
 
         result, payload = self.client.call_tool(
-            name="master.query_log",
+            name="orchestrator.query_log",
             arguments={
                 "path": str(test_log.relative_to(ROOT)),
                 "mode": "tail",

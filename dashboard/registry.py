@@ -25,16 +25,16 @@ def load_registry() -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         project_id = item.get("project_id")
-        master_kit_root = item.get("master_kit_root")
+        orchestration_kit_root = item.get("orchestration_kit_root")
         project_root = item.get("project_root")
         label = item.get("label")
-        if not all(isinstance(x, str) and x for x in (project_id, master_kit_root, project_root, label)):
+        if not all(isinstance(x, str) and x for x in (project_id, orchestration_kit_root, project_root, label)):
             continue
         projects.append(
             {
                 "project_id": project_id,
                 "label": label,
-                "master_kit_root": master_kit_root,
+                "orchestration_kit_root": orchestration_kit_root,
                 "project_root": project_root,
                 "registered_at": item.get("registered_at") if isinstance(item.get("registered_at"), str) else None,
                 "updated_at": item.get("updated_at") if isinstance(item.get("updated_at"), str) else None,
@@ -48,12 +48,12 @@ def save_registry(projects: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(projects, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def upsert_registry_project(*, master_kit_root: Path, project_root: Path, label: str | None) -> dict[str, Any]:
+def upsert_registry_project(*, orchestration_kit_root: Path, project_root: Path, label: str | None) -> dict[str, Any]:
     projects = load_registry()
-    master_kit_root = master_kit_root.resolve()
+    orchestration_kit_root = orchestration_kit_root.resolve()
     project_root = project_root.resolve()
 
-    project_id = project_id_for(master_kit_root)
+    project_id = project_id_for(orchestration_kit_root)
     now = now_iso()
     resolved_label = label.strip() if isinstance(label, str) and label.strip() else project_root.name
 
@@ -65,7 +65,7 @@ def upsert_registry_project(*, master_kit_root: Path, project_root: Path, label:
             record = {
                 "project_id": project_id,
                 "label": resolved_label,
-                "master_kit_root": str(master_kit_root),
+                "orchestration_kit_root": str(orchestration_kit_root),
                 "project_root": str(project_root),
                 "registered_at": existing_registered,
                 "updated_at": now,
@@ -78,7 +78,7 @@ def upsert_registry_project(*, master_kit_root: Path, project_root: Path, label:
         record = {
             "project_id": project_id,
             "label": resolved_label,
-            "master_kit_root": str(master_kit_root),
+            "orchestration_kit_root": str(orchestration_kit_root),
             "project_root": str(project_root),
             "registered_at": now,
             "updated_at": now,

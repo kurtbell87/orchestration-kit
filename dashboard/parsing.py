@@ -33,8 +33,8 @@ def resolve_pointer(base: Path, raw: str | None) -> Path | None:
     return p.resolve()
 
 
-def parse_manifest_metadata(master_kit_root: Path, manifest_path: str | None) -> dict[str, Any]:
-    resolved = resolve_pointer(master_kit_root, manifest_path)
+def parse_manifest_metadata(orchestration_kit_root: Path, manifest_path: str | None) -> dict[str, Any]:
+    resolved = resolve_pointer(orchestration_kit_root, manifest_path)
     if resolved is None or not resolved.is_file():
         return {}
     try:
@@ -71,10 +71,10 @@ def parse_run(
         "capsule_path": None,
         "manifest_path": None,
         "log_path": None,
-        "events_path": rel_to(project["master_kit_root_path"], events_path),
+        "events_path": rel_to(project["orchestration_kit_root_path"], events_path),
         "cwd": None,
         "project_root": project["project_root"],
-        "master_kit_root": project["master_kit_root"],
+        "orchestration_kit_root": project["orchestration_kit_root"],
         "agent_runtime": None,
         "host": None,
         "pid": None,
@@ -95,8 +95,8 @@ def parse_run(
             run["started_at"] = ts or run["started_at"]
             if isinstance(event.get("project_root"), str):
                 run["project_root"] = event["project_root"]
-            if isinstance(event.get("master_kit_root"), str):
-                run["master_kit_root"] = event["master_kit_root"]
+            if isinstance(event.get("orchestration_kit_root"), str):
+                run["orchestration_kit_root"] = event["orchestration_kit_root"]
             if isinstance(event.get("agent_runtime"), str):
                 run["agent_runtime"] = event["agent_runtime"]
             if isinstance(event.get("host"), str):
@@ -196,19 +196,19 @@ def parse_run(
     if run["manifest_path"] is None:
         manifests = sorted((run_root / "manifests").glob("*.json"))
         if manifests:
-            run["manifest_path"] = rel_to(project["master_kit_root_path"], manifests[0])
+            run["manifest_path"] = rel_to(project["orchestration_kit_root_path"], manifests[0])
 
     if run["capsule_path"] is None:
         capsules = sorted((run_root / "capsules").glob("*.md"))
         if capsules:
-            run["capsule_path"] = rel_to(project["master_kit_root_path"], capsules[0])
+            run["capsule_path"] = rel_to(project["orchestration_kit_root_path"], capsules[0])
 
     if run["log_path"] is None:
         logs = sorted((run_root / "logs").glob("*.log"))
         if logs:
-            run["log_path"] = rel_to(project["master_kit_root_path"], logs[0])
+            run["log_path"] = rel_to(project["orchestration_kit_root_path"], logs[0])
 
-    metadata = parse_manifest_metadata(project["master_kit_root_path"], run["manifest_path"])
+    metadata = parse_manifest_metadata(project["orchestration_kit_root_path"], run["manifest_path"])
     if metadata:
         if run["parent_run_id"] is None and isinstance(metadata.get("parent_run_id"), str):
             run["parent_run_id"] = metadata["parent_run_id"]
@@ -226,8 +226,8 @@ def parse_run(
             run["cwd"] = metadata["cwd"]
         if isinstance(metadata.get("project_root"), str):
             run["project_root"] = metadata["project_root"]
-        if isinstance(metadata.get("master_kit_root"), str):
-            run["master_kit_root"] = metadata["master_kit_root"]
+        if isinstance(metadata.get("orchestration_kit_root"), str):
+            run["orchestration_kit_root"] = metadata["orchestration_kit_root"]
         if isinstance(metadata.get("agent_runtime"), str):
             run["agent_runtime"] = metadata["agent_runtime"]
         if isinstance(metadata.get("host"), str):

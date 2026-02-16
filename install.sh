@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# install.sh -- One-command setup for master-kit.
+# install.sh -- One-command setup for orchestration-kit.
 #
 # Modes:
-#   Monorepo  — run from inside master-kit/ (existing behavior).
-#   Greenfield — run from a project root that contains master-kit/ as a subdirectory.
+#   Monorepo  — run from inside orchestration-kit/ (existing behavior).
+#   Greenfield — run from a project root that contains orchestration-kit/ as a subdirectory.
 #
 # Detection: if CWD == script dir → monorepo, else → greenfield.
 
@@ -22,14 +22,14 @@ ENV_FILE_WRITTEN=0
 usage() {
   cat <<'USAGE'
 Usage: ./install.sh [options]            (monorepo mode)
-       ./master-kit/install.sh [options] (greenfield mode)
+       ./orchestration-kit/install.sh [options] (greenfield mode)
 
 Options:
   --check-only        Run validation checks only (no chmod fixes, no smoke run).
   --skip-smoke        Skip tools/smoke-run.
   --install-python    Install requirements.txt if present.
   --no-mcp            Skip MCP token/env setup.
-  --no-env-file       Do not write .master-kit.env.
+  --no-env-file       Do not write .orchestration-kit.env.
   -h, --help          Show this help.
 USAGE
 }
@@ -76,9 +76,9 @@ if [[ "$CURRENT_DIR" == "$SCRIPT_DIR" ]]; then
 else
   MODE="greenfield"
   PROJECT_ROOT="$CURRENT_DIR"
-  MASTER_KIT_ROOT="$SCRIPT_DIR"
-  # Compute the relative path from project root to master-kit (for symlinks).
-  MK_REL="$(python3 -c "import os; print(os.path.relpath('$MASTER_KIT_ROOT', '$PROJECT_ROOT'))")"
+  ORCHESTRATION_KIT_ROOT="$SCRIPT_DIR"
+  # Compute the relative path from project root to orchestration-kit (for symlinks).
+  MK_REL="$(python3 -c "import os; print(os.path.relpath('$ORCHESTRATION_KIT_ROOT', '$PROJECT_ROOT'))")"
 fi
 
 echo "[install] mode: $MODE"
@@ -131,31 +131,31 @@ run_monorepo_install() {
     mkdir -p "$ROOT_DIR/runs/mcp-logs"
     token="$("$ROOT_DIR/tools/mcp-token")"
 
-    host="${MASTER_KIT_MCP_HOST:-127.0.0.1}"
-    port="${MASTER_KIT_MCP_PORT:-7337}"
-    max_output="${MASTER_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
+    host="${ORCHESTRATION_KIT_MCP_HOST:-127.0.0.1}"
+    port="${ORCHESTRATION_KIT_MCP_PORT:-7337}"
+    max_output="${ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
 
     if [[ "$WRITE_ENV_FILE" -eq 1 ]]; then
-      env_file="$ROOT_DIR/.master-kit.env"
+      env_file="$ROOT_DIR/.orchestration-kit.env"
       cat > "$env_file" <<ENV
-export MASTER_KIT_ROOT="$ROOT_DIR"
-export MASTER_KIT_MCP_HOST="$host"
-export MASTER_KIT_MCP_PORT="$port"
-export MASTER_KIT_MCP_MAX_OUTPUT_BYTES="$max_output"
-export MASTER_KIT_MCP_TOKEN="$token"
+export ORCHESTRATION_KIT_ROOT="$ROOT_DIR"
+export ORCHESTRATION_KIT_MCP_HOST="$host"
+export ORCHESTRATION_KIT_MCP_PORT="$port"
+export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES="$max_output"
+export ORCHESTRATION_KIT_MCP_TOKEN="$token"
 ENV
       chmod 600 "$env_file"
       echo "[install] wrote MCP env file: $env_file"
-      echo "[install] next: source .master-kit.env"
+      echo "[install] next: source .orchestration-kit.env"
       ENV_FILE_WRITTEN=1
     else
       echo "[install] MCP configured (token stored in .mcp-token)."
       echo "[install] export these before running tools/mcp-serve:"
-      echo "export MASTER_KIT_ROOT=\"$ROOT_DIR\""
-      echo "export MASTER_KIT_MCP_HOST=\"$host\""
-      echo "export MASTER_KIT_MCP_PORT=\"$port\""
-      echo "export MASTER_KIT_MCP_MAX_OUTPUT_BYTES=\"$max_output\""
-      echo "export MASTER_KIT_MCP_TOKEN=\"\$(tools/mcp-token)\""
+      echo "export ORCHESTRATION_KIT_ROOT=\"$ROOT_DIR\""
+      echo "export ORCHESTRATION_KIT_MCP_HOST=\"$host\""
+      echo "export ORCHESTRATION_KIT_MCP_PORT=\"$port\""
+      echo "export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES=\"$max_output\""
+      echo "export ORCHESTRATION_KIT_MCP_TOKEN=\"\$(tools/mcp-token)\""
     fi
   fi
 
@@ -163,7 +163,7 @@ ENV
   if [[ "$CHECK_ONLY" -eq 0 ]]; then
     echo "[install] quick start:"
     if [[ "$ENV_FILE_WRITTEN" -eq 1 ]]; then
-      echo "  1. source .master-kit.env"
+      echo "  1. source .orchestration-kit.env"
       echo "  2. tools/mcp-serve"
       echo "  3. tools/kit --json research status"
     else
@@ -179,11 +179,11 @@ ENV
 
 run_greenfield_install() {
   echo "[install] PROJECT_ROOT=$PROJECT_ROOT"
-  echo "[install] MASTER_KIT_ROOT=$MASTER_KIT_ROOT"
+  echo "[install] ORCHESTRATION_KIT_ROOT=$ORCHESTRATION_KIT_ROOT"
   echo "[install] relative path: $MK_REL"
 
-  # ── Step 1: Bootstrap master-kit (validate + chmod, skip workspace seeding) ──
-  BOOTSTRAP_CMD=("$MASTER_KIT_ROOT/tools/bootstrap" "--greenfield")
+  # ── Step 1: Bootstrap orchestration-kit (validate + chmod, skip workspace seeding) ──
+  BOOTSTRAP_CMD=("$ORCHESTRATION_KIT_ROOT/tools/bootstrap" "--greenfield")
   if [[ "$CHECK_ONLY" -eq 1 ]]; then
     BOOTSTRAP_CMD+=("--check-only")
   fi
@@ -237,28 +237,28 @@ run_greenfield_install() {
 
   # settings.json — copy (not symlink) so the project can customise it.
   if [[ ! -f "$PROJECT_ROOT/.claude/settings.json" ]]; then
-    cp "$MASTER_KIT_ROOT/.claude/settings.json" "$PROJECT_ROOT/.claude/settings.json"
+    cp "$ORCHESTRATION_KIT_ROOT/.claude/settings.json" "$PROJECT_ROOT/.claude/settings.json"
     echo "[install]   created .claude/settings.json"
   fi
 
-  # Hook — symlink so git pull in master-kit/ auto-updates.
-  link_rel "$MASTER_KIT_ROOT/.claude/hooks/pre-tool-use.sh" \
+  # Hook — symlink so git pull in orchestration-kit/ auto-updates.
+  link_rel "$ORCHESTRATION_KIT_ROOT/.claude/hooks/pre-tool-use.sh" \
            "$PROJECT_ROOT/.claude/hooks/pre-tool-use.sh"
 
   # Prompts — symlink all 14 from the three kits.
-  for prompt in "$MASTER_KIT_ROOT"/claude-tdd-kit/.claude/prompts/*.md; do
+  for prompt in "$ORCHESTRATION_KIT_ROOT"/tdd-kit/.claude/prompts/*.md; do
     [[ -f "$prompt" ]] || continue
     name="$(basename "$prompt")"
     link_rel "$prompt" "$PROJECT_ROOT/.claude/prompts/$name"
   done
 
-  for prompt in "$MASTER_KIT_ROOT"/claude-research-kit/.claude/prompts/*.md; do
+  for prompt in "$ORCHESTRATION_KIT_ROOT"/research-kit/.claude/prompts/*.md; do
     [[ -f "$prompt" ]] || continue
     name="$(basename "$prompt")"
     link_rel "$prompt" "$PROJECT_ROOT/.claude/prompts/$name"
   done
 
-  for prompt in "$MASTER_KIT_ROOT"/claude-mathematics-kit/.claude/prompts/*.md; do
+  for prompt in "$ORCHESTRATION_KIT_ROOT"/mathematics-kit/.claude/prompts/*.md; do
     [[ -f "$prompt" ]] || continue
     name="$(basename "$prompt")"
     link_rel "$prompt" "$PROJECT_ROOT/.claude/prompts/$name"
@@ -273,25 +273,25 @@ run_greenfield_install() {
 
   echo "[install] linking kit scripts into .kit/"
 
-  link_rel "$MASTER_KIT_ROOT/claude-tdd-kit/tdd.sh"               "$KIT_DIR/tdd.sh"
-  link_rel "$MASTER_KIT_ROOT/claude-research-kit/experiment.sh"    "$KIT_DIR/experiment.sh"
-  link_rel "$MASTER_KIT_ROOT/claude-mathematics-kit/math.sh"       "$KIT_DIR/math.sh"
+  link_rel "$ORCHESTRATION_KIT_ROOT/tdd-kit/tdd.sh"               "$KIT_DIR/tdd.sh"
+  link_rel "$ORCHESTRATION_KIT_ROOT/research-kit/experiment.sh"    "$KIT_DIR/experiment.sh"
+  link_rel "$ORCHESTRATION_KIT_ROOT/mathematics-kit/math.sh"       "$KIT_DIR/math.sh"
 
   mkdir -p "$KIT_DIR/scripts"
 
-  for script in "$MASTER_KIT_ROOT"/claude-tdd-kit/scripts/*; do
+  for script in "$ORCHESTRATION_KIT_ROOT"/tdd-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
     link_rel "$script" "$KIT_DIR/scripts/$name"
   done
 
-  for script in "$MASTER_KIT_ROOT"/claude-research-kit/scripts/*; do
+  for script in "$ORCHESTRATION_KIT_ROOT"/research-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
     link_rel "$script" "$KIT_DIR/scripts/$name"
   done
 
-  for script in "$MASTER_KIT_ROOT"/claude-mathematics-kit/scripts/*; do
+  for script in "$ORCHESTRATION_KIT_ROOT"/mathematics-kit/scripts/*; do
     [[ -f "$script" ]] || continue
     name="$(basename "$script")"
     link_rel "$script" "$KIT_DIR/scripts/$name"
@@ -304,20 +304,20 @@ run_greenfield_install() {
   echo "[install] seeding state files and working dirs into .kit/"
 
   # TDD
-  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/LAST_TOUCH.md" "$KIT_DIR/LAST_TOUCH.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-tdd-kit/templates/PRD.md"        "$KIT_DIR/PRD.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/tdd-kit/templates/LAST_TOUCH.md" "$KIT_DIR/LAST_TOUCH.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/tdd-kit/templates/PRD.md"        "$KIT_DIR/PRD.md"
   mkdir -p "$KIT_DIR/docs"
 
   # Research
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/RESEARCH_LOG.md"  "$KIT_DIR/RESEARCH_LOG.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/QUESTIONS.md"      "$KIT_DIR/QUESTIONS.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-research-kit/templates/DOMAIN_PRIORS.md" "$KIT_DIR/DOMAIN_PRIORS.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/research-kit/templates/RESEARCH_LOG.md"  "$KIT_DIR/RESEARCH_LOG.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/research-kit/templates/QUESTIONS.md"      "$KIT_DIR/QUESTIONS.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/research-kit/templates/DOMAIN_PRIORS.md" "$KIT_DIR/DOMAIN_PRIORS.md"
   mkdir -p "$KIT_DIR/experiments" "$KIT_DIR/results" "$KIT_DIR/handoffs/completed"
 
   # Math
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTIONS.md"     "$KIT_DIR/CONSTRUCTIONS.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/CONSTRUCTION_LOG.md"  "$KIT_DIR/CONSTRUCTION_LOG.md"
-  copy_if_missing "$MASTER_KIT_ROOT/claude-mathematics-kit/templates/DOMAIN_CONTEXT.md"    "$KIT_DIR/DOMAIN_CONTEXT.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/mathematics-kit/templates/CONSTRUCTIONS.md"     "$KIT_DIR/CONSTRUCTIONS.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/mathematics-kit/templates/CONSTRUCTION_LOG.md"  "$KIT_DIR/CONSTRUCTION_LOG.md"
+  copy_if_missing "$ORCHESTRATION_KIT_ROOT/mathematics-kit/templates/DOMAIN_CONTEXT.md"    "$KIT_DIR/DOMAIN_CONTEXT.md"
   mkdir -p "$KIT_DIR/specs"
 
   echo "[install]   state files seeded"
@@ -333,8 +333,8 @@ run_greenfield_install() {
 *.key
 credentials.json
 
-# Master-kit runtime
-.master-kit.env
+# Orchestration-kit runtime
+.orchestration-kit.env
 .mcp-token
 
 # OS files
@@ -402,37 +402,37 @@ GITIGNORE
   # ── Step 5: Generate combined CLAUDE.md ────────────────────────────────────
 
   if [[ ! -f "$PROJECT_ROOT/CLAUDE.md" ]]; then
-    cp "$MASTER_KIT_ROOT/templates/greenfield-CLAUDE.md" "$PROJECT_ROOT/CLAUDE.md"
+    cp "$ORCHESTRATION_KIT_ROOT/templates/greenfield-CLAUDE.md" "$PROJECT_ROOT/CLAUDE.md"
     echo "[install]   created CLAUDE.md"
   else
     echo "[install]   CLAUDE.md already exists, skipping"
   fi
 
-  # ── Step 6: Write .master-kit.env ──────────────────────────────────────────
+  # ── Step 6: Write .orchestration-kit.env ──────────────────────────────────────────
 
   if [[ "$WRITE_ENV_FILE" -eq 1 ]]; then
-    env_file="$PROJECT_ROOT/.master-kit.env"
+    env_file="$PROJECT_ROOT/.orchestration-kit.env"
 
     # MCP token (optional — only if tools/mcp-token exists and MCP not disabled).
     mcp_vars=""
     if [[ "$SETUP_MCP" -eq 1 ]]; then
-      mkdir -p "$MASTER_KIT_ROOT/runs/mcp-logs"
-      token="$("$MASTER_KIT_ROOT/tools/mcp-token")"
-      host="${MASTER_KIT_MCP_HOST:-127.0.0.1}"
-      port="${MASTER_KIT_MCP_PORT:-7337}"
-      max_output="${MASTER_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
+      mkdir -p "$ORCHESTRATION_KIT_ROOT/runs/mcp-logs"
+      token="$("$ORCHESTRATION_KIT_ROOT/tools/mcp-token")"
+      host="${ORCHESTRATION_KIT_MCP_HOST:-127.0.0.1}"
+      port="${ORCHESTRATION_KIT_MCP_PORT:-7337}"
+      max_output="${ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
       mcp_vars="$(cat <<MCPENV
-export MASTER_KIT_MCP_HOST="$host"
-export MASTER_KIT_MCP_PORT="$port"
-export MASTER_KIT_MCP_MAX_OUTPUT_BYTES="$max_output"
-export MASTER_KIT_MCP_TOKEN="$token"
+export ORCHESTRATION_KIT_MCP_HOST="$host"
+export ORCHESTRATION_KIT_MCP_PORT="$port"
+export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES="$max_output"
+export ORCHESTRATION_KIT_MCP_TOKEN="$token"
 MCPENV
 )"
     fi
 
     cat > "$env_file" <<ENV
 export PROJECT_ROOT="$PROJECT_ROOT"
-export MASTER_KIT_ROOT="$MASTER_KIT_ROOT"
+export ORCHESTRATION_KIT_ROOT="$ORCHESTRATION_KIT_ROOT"
 export KIT_STATE_DIR=".kit"
 ${mcp_vars}
 ENV
@@ -446,8 +446,8 @@ ENV
   if [[ "$SKIP_SMOKE" -eq 0 ]]; then
     echo "[install] running smoke test (greenfield)"
     export PROJECT_ROOT
-    export MASTER_KIT_ROOT
-    "$MASTER_KIT_ROOT/tools/smoke-run"
+    export ORCHESTRATION_KIT_ROOT
+    "$ORCHESTRATION_KIT_ROOT/tools/smoke-run"
   else
     echo "[install] smoke test skipped"
   fi
@@ -455,11 +455,11 @@ ENV
   echo "[install] ready (greenfield)"
   echo "[install] quick start:"
   if [[ "$ENV_FILE_WRITTEN" -eq 1 ]]; then
-    echo "  1. source .master-kit.env"
+    echo "  1. source .orchestration-kit.env"
     echo "  2. $MK_REL/tools/kit --json research status"
   else
     echo "  1. export PROJECT_ROOT=\"$PROJECT_ROOT\""
-    echo "  2. export MASTER_KIT_ROOT=\"$MASTER_KIT_ROOT\""
+    echo "  2. export ORCHESTRATION_KIT_ROOT=\"$ORCHESTRATION_KIT_ROOT\""
     echo "  3. $MK_REL/tools/kit --json research status"
   fi
 }

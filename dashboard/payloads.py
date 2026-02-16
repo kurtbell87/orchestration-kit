@@ -172,7 +172,7 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
           exit_code,
           cwd,
           project_root,
-          master_kit_root,
+          orchestration_kit_root,
           agent_runtime,
           host,
           pid,
@@ -273,7 +273,7 @@ def run_detail_payload(project_id: str, run_id: str) -> dict[str, Any]:
 
 def _project_row(project_id: str) -> dict[str, Any]:
     row = load_one_row(
-        "SELECT project_id, master_kit_root, project_root FROM projects WHERE project_id = ?",
+        "SELECT project_id, orchestration_kit_root, project_root FROM projects WHERE project_id = ?",
         (project_id,),
     )
     if row is None:
@@ -288,18 +288,18 @@ def _resolve_artifact_path(
     scope: str = "auto",
 ) -> tuple[Path, Path]:
     project = _project_row(project_id)
-    master_kit_root = Path(str(project["master_kit_root"])).expanduser().resolve()
+    orchestration_kit_root = Path(str(project["orchestration_kit_root"])).expanduser().resolve()
     project_root = Path(str(project["project_root"])).expanduser().resolve()
 
-    if scope not in {"auto", "master-kit", "project"}:
-        raise ValueError("invalid scope; expected auto|master-kit|project")
+    if scope not in {"auto", "orchestration-kit", "project"}:
+        raise ValueError("invalid scope; expected auto|orchestration-kit|project")
 
-    if scope == "master-kit":
-        roots: list[tuple[str, Path]] = [("master-kit", master_kit_root)]
+    if scope == "orchestration-kit":
+        roots: list[tuple[str, Path]] = [("orchestration-kit", orchestration_kit_root)]
     elif scope == "project":
         roots = [("project", project_root)]
     else:
-        roots = [("master-kit", master_kit_root), ("project", project_root)]
+        roots = [("orchestration-kit", orchestration_kit_root), ("project", project_root)]
 
     path_raw = str(raw_path).strip()
     path_obj = Path(path_raw)
@@ -312,8 +312,8 @@ def _resolve_artifact_path(
         else:
             normalized = path_raw.lstrip("/")
             variants = [normalized]
-            if normalized.startswith("master-kit/"):
-                variants.append(normalized[len("master-kit/"):])
+            if normalized.startswith("orchestration-kit/"):
+                variants.append(normalized[len("orchestration-kit/"):])
             if normalized.startswith("project/"):
                 variants.append(normalized[len("project/"):])
             seen: set[str] = set()
@@ -356,7 +356,7 @@ def artifact_payload(
     max_bytes: int | None = None,
     scope: str = "auto",
 ) -> dict[str, Any]:
-    max_cap = int(os.getenv("MASTER_KIT_DASHBOARD_ARTIFACT_MAX_BYTES", "240000"))
+    max_cap = int(os.getenv("ORCHESTRATION_KIT_DASHBOARD_ARTIFACT_MAX_BYTES", "240000"))
     if max_bytes is None:
         max_bytes = max_cap
     max_bytes = max(1024, min(int(max_bytes), max_cap))
@@ -405,7 +405,7 @@ def artifact_payload(
 def project_docs_payload(project_id: str) -> dict[str, Any]:
     project = _project_row(project_id)
     project_root = Path(str(project["project_root"])).expanduser().resolve()
-    master_kit_root = Path(str(project["master_kit_root"])).expanduser().resolve()
+    orchestration_kit_root = Path(str(project["orchestration_kit_root"])).expanduser().resolve()
 
     fixed_project_docs = [
         "LAST_TOUCH.md",
@@ -420,19 +420,19 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
         "README.md",
     ]
     fixed_master_docs = [
-        "claude-tdd-kit/LAST_TOUCH.md",
-        "claude-research-kit/DOMAIN_PRIORS.md",
-        "claude-research-kit/RESEARCH_LOG.md",
-        "claude-research-kit/QUESTIONS.md",
-        "claude-mathematics-kit/CONSTRUCTION_LOG.md",
-        "claude-mathematics-kit/CONSTRUCTIONS.md",
-        "claude-mathematics-kit/DOMAIN_CONTEXT.md",
+        "tdd-kit/LAST_TOUCH.md",
+        "research-kit/DOMAIN_PRIORS.md",
+        "research-kit/RESEARCH_LOG.md",
+        "research-kit/QUESTIONS.md",
+        "mathematics-kit/CONSTRUCTION_LOG.md",
+        "mathematics-kit/CONSTRUCTIONS.md",
+        "mathematics-kit/DOMAIN_CONTEXT.md",
     ]
 
     kit_template_dirs = [
-        master_kit_root / "claude-tdd-kit" / "templates",
-        master_kit_root / "claude-research-kit" / "templates",
-        master_kit_root / "claude-mathematics-kit" / "templates",
+        orchestration_kit_root / "tdd-kit" / "templates",
+        orchestration_kit_root / "research-kit" / "templates",
+        orchestration_kit_root / "mathematics-kit" / "templates",
     ]
 
     entries: list[dict[str, Any]] = []
@@ -456,7 +456,7 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
             return
         seen.add(key)
 
-        base = project_root if scope_name == "project" else master_kit_root
+        base = project_root if scope_name == "project" else orchestration_kit_root
         candidate = (base / rel_path).resolve()
         if candidate.exists():
             try:
@@ -484,7 +484,7 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
         add_entry("project", rel, required=True)
 
     for rel in fixed_master_docs:
-        add_entry("master-kit", rel, required=False)
+        add_entry("orchestration-kit", rel, required=False)
 
     for folder in ("docs", "specs", "experiments"):
         base = project_root / folder

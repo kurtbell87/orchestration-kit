@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "master-kit/interop/manifest.schema.json",
+  "$id": "orchestration-kit/interop/manifest.schema.json",
   "title": "Run Manifest",
   "type": "object",
   "additionalProperties": false,

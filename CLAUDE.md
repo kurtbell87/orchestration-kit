@@ -1,4 +1,4 @@
-# Master-Kit — Orchestrator Instructions
+# Orchestration-Kit — Orchestrator Instructions
 
 ## What This Is
 
@@ -6,20 +6,20 @@ A monorepo orchestrator wrapping three domain kits. You drive them through `tool
 
 | Kit | Directory | Phases |
 |-----|-----------|--------|
-| **TDD** | `claude-tdd-kit/` | red, green, refactor, ship, full, watch |
-| **Research** | `claude-research-kit/` | survey, frame, run, read, log, cycle, full, program, status |
-| **Math** | `claude-mathematics-kit/` | survey, specify, construct, formalize, prove, audit, log, full, program, status |
+| **TDD** | `tdd-kit/` | red, green, refactor, ship, full, watch |
+| **Research** | `research-kit/` | survey, frame, run, read, log, cycle, full, program, status |
+| **Math** | `mathematics-kit/` | survey, specify, construct, formalize, prove, polish, audit, log, full, program, status |
 
 ## Greenfield Setup (REQUIRED before first run)
 
-When using master-kit from a parent project directory (greenfield mode), you **must run the installer first** to symlink kit scripts (`tdd.sh`, `experiment.sh`, `math.sh`) into the project root. Without this, `tools/kit` will fail with `FileNotFoundError: ./tdd.sh`.
+When using orchestration-kit from a parent project directory (greenfield mode), you **must run the installer first** to symlink kit scripts (`tdd.sh`, `experiment.sh`, `math.sh`) into the project root. Without this, `tools/kit` will fail with `FileNotFoundError: ./tdd.sh`.
 
 ```bash
-cd <project-root> && echo "n" | ./master-kit/install.sh --skip-smoke
-source .master-kit.env
+cd <project-root> && echo "n" | ./orchestration-kit/install.sh --skip-smoke
+source .orchestration-kit.env
 ```
 
-This only needs to run once per project. It creates symlinks, deploys `.claude/` prompts/hooks, and writes `.master-kit.env`.
+This only needs to run once per project. It creates symlinks, deploys `.claude/` prompts/hooks, and writes `.orchestration-kit.env`.
 
 ## Environment: Nested Session Guard
 
@@ -77,7 +77,7 @@ Responses land in `interop/responses/<request_id>.json`.
 ## Global Dashboard (Optional)
 
 ```bash
-tools/dashboard register --master-kit-root "$(pwd)" --project-root "${PROJECT_ROOT:-$(pwd)}"
+tools/dashboard register --orchestration-kit-root "$(pwd)" --project-root "${PROJECT_ROOT:-$(pwd)}"
 tools/dashboard index
 tools/dashboard serve --host 127.0.0.1 --port 7340
 ```
@@ -97,9 +97,9 @@ tools/query-log grep 'ERROR' runs/<run_id>/logs/<kit>_<phase>.log
 
 | Kit | State files to read first |
 |-----|--------------------------|
-| TDD | `claude-tdd-kit/CLAUDE.md` → `LAST_TOUCH.md` → `PRD.md` |
-| Research | `claude-research-kit/CLAUDE.md` → `RESEARCH_LOG.md` → `QUESTIONS.md` |
-| Math | `claude-mathematics-kit/CLAUDE.md` → `CONSTRUCTION_LOG.md` → `CONSTRUCTIONS.md` |
+| TDD | `tdd-kit/CLAUDE.md` → `LAST_TOUCH.md` → `PRD.md` |
+| Research | `research-kit/CLAUDE.md` → `RESEARCH_LOG.md` → `QUESTIONS.md` |
+| Math | `mathematics-kit/CLAUDE.md` → `CONSTRUCTION_LOG.md` → `CONSTRUCTIONS.md` |
 
 ## Don't
 
@@ -124,11 +124,11 @@ You are the orchestrator. Sub-agents do the work. Your job is to sequence phases
 ## MCP Server (Optional)
 
 ```bash
-source .master-kit.env
+source .orchestration-kit.env
 tools/mcp-serve
 ```
 
-Exposes: `master.run`, `master.request_create`, `master.pump`, `master.run_info`, `master.query_log`
+Exposes: `orchestrator.run`, `orchestrator.request_create`, `orchestrator.pump`, `orchestrator.run_info`, `orchestrator.query_log`
 
 See `docs/MCP_SETUP.md` for client configuration.
 

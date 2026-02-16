@@ -3,24 +3,24 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-export MASTER_KIT_ROOT="${MASTER_KIT_ROOT:-$ROOT_DIR}"
-export MASTER_KIT_MCP_HOST="${MASTER_KIT_MCP_HOST:-127.0.0.1}"
-export MASTER_KIT_MCP_PORT="${MASTER_KIT_MCP_PORT:-7337}"
-export MASTER_KIT_MCP_MAX_OUTPUT_BYTES="${MASTER_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
+export ORCHESTRATION_KIT_ROOT="${ORCHESTRATION_KIT_ROOT:-$ROOT_DIR}"
+export ORCHESTRATION_KIT_MCP_HOST="${ORCHESTRATION_KIT_MCP_HOST:-127.0.0.1}"
+export ORCHESTRATION_KIT_MCP_PORT="${ORCHESTRATION_KIT_MCP_PORT:-7337}"
+export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES="${ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES:-32000}"
 
-if [[ -z "${MASTER_KIT_MCP_TOKEN:-}" ]]; then
-  echo "Error: MASTER_KIT_MCP_TOKEN is required" >&2
+if [[ -z "${ORCHESTRATION_KIT_MCP_TOKEN:-}" ]]; then
+  echo "Error: ORCHESTRATION_KIT_MCP_TOKEN is required" >&2
   echo "Tip: run tools/mcp-token to generate a local token." >&2
   exit 2
 fi
 
-if [[ -n "${MASTER_KIT_MCP_LOG_DIR:-}" ]]; then
-  LOG_DIR="$MASTER_KIT_MCP_LOG_DIR"
+if [[ -n "${ORCHESTRATION_KIT_MCP_LOG_DIR:-}" ]]; then
+  LOG_DIR="$ORCHESTRATION_KIT_MCP_LOG_DIR"
 else
   LOG_DIR="$ROOT_DIR/runs/mcp-logs"
 fi
 mkdir -p "$LOG_DIR"
-export MASTER_KIT_MCP_LOG_DIR="$LOG_DIR"
+export ORCHESTRATION_KIT_MCP_LOG_DIR="$LOG_DIR"
 
 if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT_DIR/.venv/bin/python"

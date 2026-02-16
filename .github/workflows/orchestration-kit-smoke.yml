@@ -1,0 +1,81 @@
+name: orchestration-kit-smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Ensure executable bits
+        run: |
+          chmod +x tools/kit
+          chmod +x tools/pump
+          chmod +x tools/query-log
+          chmod +x tools/validate-capsules
+          chmod +x tools/validate-manifests
+          chmod +x tools/smoke-run
+          chmod +x tools/mcp-serve
+          chmod +x tools/mcp-token
+          chmod +x tools/spawn-claude-worker
+          chmod +x tools/spawn-codex-worker
+          chmod +x mcp/server.py
+          chmod +x .claude/hooks/pre-tool-use.sh
+
+      - name: Unit tests
+        run: |
+          python -m unittest tests.test_master_hook -v
+          python -m unittest tests.test_hook_reentry_guard -v
+          python -m unittest tests.test_validators -v
+
+      - name: MCP integration tests
+        env:
+          ORCHESTRATION_KIT_ROOT: ${{ github.workspace }}
+          ORCHESTRATION_KIT_MCP_HOST: 127.0.0.1
+          ORCHESTRATION_KIT_MCP_PORT: "7337"
+          ORCHESTRATION_KIT_MCP_TOKEN: ci-mcp-token
+          ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES: "320"
+        run: |
+          mkdir -p runs/mcp-logs
+          tools/mcp-serve > runs/mcp-logs/ci-mcp.log 2>&1 &
+          MCP_PID=$!
+          trap 'kill "$MCP_PID"' EXIT
+
+          for i in $(seq 1 40); do
+            if grep -q "orchestration-kit mcp ready" runs/mcp-logs/ci-mcp.log; then
+              break
+            fi
+            if ! kill -0 "$MCP_PID" 2>/dev/null; then
+              cat runs/mcp-logs/ci-mcp.log
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          if ! grep -q "orchestration-kit mcp ready" runs/mcp-logs/ci-mcp.log; then
+            cat runs/mcp-logs/ci-mcp.log
+            exit 1
+          fi
+
+          export ORCHESTRATION_KIT_TEST_EXTERNAL_MCP_URL="http://127.0.0.1:7337/mcp"
+          python -m unittest tests.test_mcp_server -v
+
+      - name: Smoke run
+        run: tools/smoke-run
+
+      - name: Validate all current runs
+        run: |
+          tools/validate-capsules runs
+          tools/validate-manifests --check-files runs

@@ -33,7 +33,7 @@ class CrossPhaseRoutingTests(unittest.TestCase):
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
-        env["MASTER_KIT_DASHBOARD_AUTOSTART"] = "0"
+        env["ORCHESTRATION_KIT_DASHBOARD_AUTOSTART"] = "0"
         return subprocess.run(cmd, cwd=str(ROOT), env=env, text=True, capture_output=True, check=False)
 
     def _json_tail(self, proc: subprocess.CompletedProcess[str]) -> dict[str, object]:

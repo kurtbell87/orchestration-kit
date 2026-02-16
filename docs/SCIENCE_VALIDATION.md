@@ -25,11 +25,11 @@ tools/science-validation --profile deterministic --reset
 
 Useful options:
 
-- `--project-a /tmp/master-kit-science-a`
-- `--project-b /tmp/master-kit-science-b`
-- `--dashboard-home /tmp/master-kit-dashboard-science`
+- `--project-a /tmp/orchestration-kit-science-a`
+- `--project-b /tmp/orchestration-kit-science-b`
+- `--dashboard-home /tmp/orchestration-kit-dashboard-science`
 - `--dashboard-port 7340`
-- `--output /tmp/master-kit-science-validation-report.json`
+- `--output /tmp/orchestration-kit-science-validation-report.json`
 - `--reset` (removes existing project directories before recreating)
 
 ## What It Verifies
@@ -44,7 +44,7 @@ Useful options:
 3. Accountability artifacts:
    - run capsules/manifests/logs/events for each run id
    - capsule/manifest validator pass
-   - explicit guardrail probe via master hook
+   - explicit guardrail probe via orchestrator hook
 4. Dashboard behavior:
    - project registration for two projects
    - global index + project-scoped reindex

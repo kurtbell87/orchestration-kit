@@ -29,12 +29,12 @@ def _merge_projects(tx: Any, rows: list[dict[str, Any]]) -> int:
             MERGE (p:Project {project_id: $project_id})
             SET p.label = $label,
                 p.project_root = $project_root,
-                p.master_kit_root = $master_kit_root
+                p.orchestration_kit_root = $orchestration_kit_root
             """,
             project_id=row["project_id"],
             label=row.get("label") or "",
             project_root=row.get("project_root") or "",
-            master_kit_root=row.get("master_kit_root") or "",
+            orchestration_kit_root=row.get("orchestration_kit_root") or "",
         )
         count += 1
     return count

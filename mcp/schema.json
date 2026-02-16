@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "master-kit MCP tool contracts",
+  "title": "orchestration-kit MCP tool contracts",
   "type": "object",
   "properties": {
     "tools": {
@@ -11,11 +11,11 @@
           "name": {
             "type": "string",
             "enum": [
-              "master.run",
-              "master.request_create",
-              "master.pump",
-              "master.run_info",
-              "master.query_log"
+              "orchestrator.run",
+              "orchestrator.request_create",
+              "orchestrator.pump",
+              "orchestrator.run_info",
+              "orchestrator.query_log"
             ]
           },
           "inputSchema": {

@@ -15,10 +15,10 @@ def now_iso() -> str:
 
 
 def dashboard_home() -> Path:
-    raw = os.getenv("MASTER_KIT_DASHBOARD_HOME")
+    raw = os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOME")
     if raw:
         return Path(raw).expanduser().resolve()
-    return (Path.home() / ".master-kit-dashboard").resolve()
+    return (Path.home() / ".orchestration-kit-dashboard").resolve()
 
 
 def ensure_dashboard_home() -> Path:
@@ -31,7 +31,7 @@ def ensure_dashboard_home() -> Path:
     if os.access(str(home), os.W_OK | os.X_OK):
         return home
 
-    fallback = Path("/tmp/master-kit-dashboard").resolve()
+    fallback = Path("/tmp/orchestration-kit-dashboard").resolve()
     fallback.mkdir(parents=True, exist_ok=True)
     return fallback
 
@@ -65,20 +65,20 @@ def coerce_path(raw: str | None, fallback: Path) -> Path:
     return Path(raw).expanduser().resolve()
 
 
-def current_master_kit_root() -> Path:
-    env_root = os.getenv("MASTER_KIT_ROOT")
+def current_orchestration_kit_root() -> Path:
+    env_root = os.getenv("ORCHESTRATION_KIT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
     return REPO_ROOT
 
 
-def current_project_root(default_master_kit_root: Path) -> Path:
+def current_project_root(default_orchestration_kit_root: Path) -> Path:
     env_root = os.getenv("PROJECT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
-    return default_master_kit_root
+    return default_orchestration_kit_root
 
 
-def project_id_for(master_kit_root: Path) -> str:
-    digest = hashlib.sha1(str(master_kit_root).encode("utf-8")).hexdigest()
+def project_id_for(orchestration_kit_root: Path) -> str:
+    digest = hashlib.sha1(str(orchestration_kit_root).encode("utf-8")).hexdigest()
     return digest[:12]
