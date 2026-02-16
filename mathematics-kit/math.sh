@@ -23,24 +23,21 @@ set -euo pipefail
 # Configuration -- edit these to match your project
 # ──────────────────────────────────────────────────────────────
 
-# Kit state directory — greenfield sets KIT_STATE_DIR=".kit", monorepo leaves unset.
-_SD="${KIT_STATE_DIR:-.}"
+LEAN_DIR="${LEAN_DIR:-.}"                          # Root of Lean4 project
+SPEC_DIR="${SPEC_DIR:-specs}"                      # Spec & construction docs
+RESULTS_DIR="${RESULTS_DIR:-results}"              # Archived results
+PROMPT_DIR=".claude/prompts"                       # Phase-specific prompt files
+HOOK_DIR=".claude/hooks"                           # Hook scripts
 
-LEAN_DIR="${LEAN_DIR:-.}"                                    # Root of Lean4 project
-SPEC_DIR="${SPEC_DIR:-${_SD}/specs}"                         # Spec & construction docs
-RESULTS_DIR="${RESULTS_DIR:-${_SD}/results}"                 # Archived results
-PROMPT_DIR=".claude/prompts"                                 # Phase-specific prompt files
-HOOK_DIR=".claude/hooks"                                     # Hook scripts
-
-# Lean4 build command
-LAKE_BUILD="${LAKE_BUILD:-lake build}"
+# Lean4 build command (default: summarized wrapper that auto-condenses errors)
+LAKE_BUILD="${LAKE_BUILD:-./scripts/lake-summarized.sh build}"
 
 # Revision limits
 MAX_REVISIONS="${MAX_REVISIONS:-3}"                # Max revision cycles before giving up
 
 # Program mode
 MAX_PROGRAM_CYCLES="${MAX_PROGRAM_CYCLES:-20}"
-CONSTRUCTIONS_FILE="${CONSTRUCTIONS_FILE:-${_SD}/CONSTRUCTIONS.md}"
+CONSTRUCTIONS_FILE="${CONSTRUCTIONS_FILE:-CONSTRUCTIONS.md}"
 
 # Log directory -- per-project isolation under /tmp
 _project_name="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
@@ -98,6 +95,11 @@ validate_build_env() {
     echo -e "The Lean4 toolchain may be misconfigured." >&2
     echo -e "Try: elan default leanprover/lean4:stable" >&2
     return 1
+  fi
+  # T1: Ensure summarized wrapper exists; fall back to raw lake build if missing
+  if [[ ! -x "./scripts/lake-summarized.sh" ]]; then
+    echo -e "${YELLOW}Warning: lake-summarized.sh not found. Using raw lake build.${NC}" >&2
+    LAKE_BUILD="lake build"
   fi
 }
 
@@ -173,11 +175,11 @@ lock_spec() {
   # R6.5: DOMAIN_CONTEXT.md is NOT locked during PROVE.
   # The prover may append negative knowledge to the "DOES NOT APPLY" section.
   # Hook enforcement prevents modification of other sections.
-  if [[ "${MATH_PHASE:-}" != "prove" ]] && [[ -f "$_SD/DOMAIN_CONTEXT.md" ]]; then
-    chmod 444 "$_SD/DOMAIN_CONTEXT.md"
-    echo -e "   ${YELLOW}locked:${NC} $_SD/DOMAIN_CONTEXT.md"
-  elif [[ -f "$_SD/DOMAIN_CONTEXT.md" ]]; then
-    echo -e "   ${BLUE}unlocked:${NC} $_SD/DOMAIN_CONTEXT.md (append-only for DOES NOT APPLY)"
+  if [[ "${MATH_PHASE:-}" != "prove" ]] && [[ -f "DOMAIN_CONTEXT.md" ]]; then
+    chmod 444 "DOMAIN_CONTEXT.md"
+    echo -e "   ${YELLOW}locked:${NC} DOMAIN_CONTEXT.md"
+  elif [[ -f "DOMAIN_CONTEXT.md" ]]; then
+    echo -e "   ${BLUE}unlocked:${NC} DOMAIN_CONTEXT.md (append-only for DOES NOT APPLY)"
   fi
 }
 
@@ -195,9 +197,9 @@ unlock_spec() {
       echo -e "   ${BLUE}unlocked:${NC} $f"
     fi
   done
-  if [[ -f "$_SD/DOMAIN_CONTEXT.md" ]]; then
-    chmod 644 "$_SD/DOMAIN_CONTEXT.md" 2>/dev/null || true
-    echo -e "   ${BLUE}unlocked:${NC} $_SD/DOMAIN_CONTEXT.md"
+  if [[ -f "DOMAIN_CONTEXT.md" ]]; then
+    chmod 644 "DOMAIN_CONTEXT.md" 2>/dev/null || true
+    echo -e "   ${BLUE}unlocked:${NC} DOMAIN_CONTEXT.md"
   fi
 }
 
@@ -229,8 +231,8 @@ unlock_all() {
   done < <(find_lean_files)
   find "$SPEC_DIR" -type f -name "*.md" -exec chmod 644 {} \; 2>/dev/null || true
   find "$SPEC_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
-  if [[ -f "$_SD/DOMAIN_CONTEXT.md" ]]; then
-    chmod 644 "$_SD/DOMAIN_CONTEXT.md" 2>/dev/null || true
+  if [[ -f "DOMAIN_CONTEXT.md" ]]; then
+    chmod 644 "DOMAIN_CONTEXT.md" 2>/dev/null || true
   fi
   echo -e "   ${BLUE}all files unlocked${NC}"
 }
@@ -312,10 +314,10 @@ run_status() {
   echo ""
 
   # Revision status
-  if [[ -f "$_SD/REVISION.md" ]]; then
+  if [[ -f "REVISION.md" ]]; then
     echo -e "${YELLOW}REVISION.md exists${NC} — revision cycle pending"
     local restart_from
-    restart_from=$(grep -m1 '^## restart_from:' "$_SD/REVISION.md" 2>/dev/null | sed 's/^## restart_from:[[:space:]]*//' || echo "unknown")
+    restart_from=$(grep -m1 '^## restart_from:' "REVISION.md" 2>/dev/null | sed 's/^## restart_from:[[:space:]]*//' || echo "unknown")
     echo -e "  Restart from: ${BOLD}$restart_from${NC}"
   fi
 
@@ -395,13 +397,9 @@ run_survey() {
     --append-system-prompt "$(cat "$PROMPT_DIR/math-survey.md")
 
 ## Context
-- Spec file: $spec_file
-- Lean project root: $LEAN_DIR
-- Build command: $LAKE_BUILD
-- Existing .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover)
-- Domain context: $_SD/DOMAIN_CONTEXT.md
-- Mathlib source: $(find .lake/packages/mathlib/Mathlib -maxdepth 0 -type d 2>/dev/null || find lake-packages/mathlib/Mathlib -maxdepth 0 -type d 2>/dev/null || echo 'not found')
-- Mathlib search: ./$_SD/scripts/mathlib-search.sh (use for targeted searches)
+- Spec: $spec_file
+- Mathlib source: .lake/packages/mathlib/ (use ./scripts/mathlib-search.sh for searches)
+- Domain context: DOMAIN_CONTEXT.md
 
 Read the spec file first, then survey Mathlib and existing formalizations." \
     --allowed-tools "Read,Bash,Glob,Grep" \
@@ -434,13 +432,11 @@ run_specify() {
     --append-system-prompt "$(cat "$PROMPT_DIR/math-specify.md")
 
 ## Context
-- Spec file to write: $spec_file
+- Spec: $spec_file (write here)
 - Spec directory: $SPEC_DIR
-- Domain context: $_SD/DOMAIN_CONTEXT.md
-- Existing specs: $(find "$SPEC_DIR" -name "*.md" -type f 2>/dev/null | tr '\n' ', ' || echo 'none')
-- Construction spec template: templates/construction-spec.md (if available)
+- Domain context: DOMAIN_CONTEXT.md
 
-Write precise property requirements to $spec_file. Update $_SD/DOMAIN_CONTEXT.md with Mathlib mappings." \
+Write precise property requirements to $spec_file. Update DOMAIN_CONTEXT.md with Mathlib mappings." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
     -p "Write precise mathematical property requirements to $spec_file" \
     > "$MATH_LOG_DIR/specify.log" 2>&1 || exit_code=$?
@@ -474,10 +470,9 @@ run_construct() {
     --append-system-prompt "$(cat "$PROMPT_DIR/math-construct.md")
 
 ## Context
-- Spec file: $spec_file (READ -- these are your requirements)
+- Spec: $spec_file (READ-ONLY)
 - Spec directory: $SPEC_DIR (write construction docs here)
-- Domain context: $_SD/DOMAIN_CONTEXT.md
-- Existing .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover)
+- Domain context: DOMAIN_CONTEXT.md
 
 Read the spec, then write an informal construction document with definitions, theorems, and proof sketches." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
@@ -511,28 +506,40 @@ run_formalize() {
   start_phase_timer
   ensure_hooks_executable
 
+  # T3: Start checkpoint monitor
+  local checkpoint_pid=""
+  if [[ -x "./scripts/context-checkpoint.sh" ]]; then
+    ./scripts/context-checkpoint.sh "$MATH_PHASE" --threshold 40 &
+    checkpoint_pid=$!
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
     --append-system-prompt "$(cat "$PROMPT_DIR/math-formalize.md")
 
 ## Context
-- Spec file: $spec_file (READ -- do not modify)
-- Construction docs: $(find "$SPEC_DIR" -name "construction-*" -type f 2>/dev/null | wc -l | tr -d ' ') construction doc(s) in $SPEC_DIR (use Glob to discover)
-- Domain context: $_SD/DOMAIN_CONTEXT.md
-- Build command: $LAKE_BUILD
-- Existing .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover)
+- Spec: $spec_file (READ-ONLY)
+- Build: $LAKE_BUILD
+- Domain context: DOMAIN_CONTEXT.md
 
 Read the spec and construction docs, then write .lean files with ALL proof bodies as sorry. Verify with $LAKE_BUILD." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
     -p "Read the spec and construction docs, then write Lean4 files with definitions and sorry theorems. Verify with '$LAKE_BUILD'." \
     > "$MATH_LOG_DIR/formalize.log" 2>&1 || exit_code=$?
 
+  # T3: Stop checkpoint monitor
+  if [[ -n "$checkpoint_pid" ]]; then
+    kill "$checkpoint_pid" 2>/dev/null || true
+    wait "$checkpoint_pid" 2>/dev/null || true
+  fi
+  rm -f "$MATH_LOG_DIR/.checkpoint-requested"
+
   _phase_summary "formalize" "$exit_code"
   end_phase_timer "formalize"
 }
 
-run_prove() {
+run_prove_monolithic() {
   local spec_file="${1:?Usage: math.sh prove <spec-file>}"
 
   if [[ ! -f "$spec_file" ]]; then
@@ -572,29 +579,195 @@ run_prove() {
   # Unlock specs on exit
   trap "unlock_spec '$spec_file' 2>/dev/null || true" EXIT
 
+  # T3: Start checkpoint monitor
+  local checkpoint_pid=""
+  if [[ -x "./scripts/context-checkpoint.sh" ]]; then
+    ./scripts/context-checkpoint.sh "$MATH_PHASE" --threshold 40 &
+    checkpoint_pid=$!
+  fi
+
+  # T3: Inject checkpoint context if resuming from a previous checkpoint
+  local checkpoint_context=""
+  if [[ -n "${PROVE_CHECKPOINT:-}" && -f "${PROVE_CHECKPOINT}" ]]; then
+    checkpoint_context="
+## Checkpoint Recovery
+Continuation of a previous session. Previous summary:
+$(cat "$PROVE_CHECKPOINT")
+Start from where the previous session left off. Do NOT re-attempt theorems listed as failed."
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
     --append-system-prompt "$(cat "$PROMPT_DIR/math-prove.md")
 
 ## Context
-- Spec file: $spec_file (READ-ONLY -- OS-enforced, do not modify)
-- Construction docs: $(find "$SPEC_DIR" -name "construction-*" -type f 2>/dev/null | wc -l | tr -d ' ') construction doc(s) in $SPEC_DIR (use Glob to discover)
-- Domain context: $_SD/DOMAIN_CONTEXT.md (append-only: you may add to the DOES NOT APPLY section)
-- Build command: $LAKE_BUILD
-- Error classifier: ./$_SD/scripts/lean-error-classify.sh (pipe lake build stderr through it)
-- Error summarizer: ./$_SD/scripts/lean-error-summarize.sh (pipe lake build stderr through it)
-- Lake timed build: ./$_SD/scripts/lake-timed.sh build (records build timing)
-- Current sorry count: $sorry_count
-- .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover)
+- Spec: $spec_file (READ-ONLY)
+- Build: $LAKE_BUILD
+- Domain context: DOMAIN_CONTEXT.md (append-only: DOES NOT APPLY section)
+- Sorrys: $sorry_count
+${checkpoint_context}
 
 Read the .lean files and spec. Replace sorrys with real proofs using Edit. Run '$LAKE_BUILD' after each change." \
     --allowed-tools "Read,Edit,Bash,Glob,Grep,Write" \
     -p "Fill in all sorry placeholders with real Lean4 proofs. Use Edit to replace sorry. Run '$LAKE_BUILD' after each change. Current sorry count: $sorry_count" \
     > "$MATH_LOG_DIR/prove.log" 2>&1 || exit_code=$?
 
+  # T3: Stop checkpoint monitor
+  if [[ -n "$checkpoint_pid" ]]; then
+    kill "$checkpoint_pid" 2>/dev/null || true
+    wait "$checkpoint_pid" 2>/dev/null || true
+  fi
+
   _phase_summary "prove" "$exit_code"
   end_phase_timer "prove"
+
+  # T3: Checkpoint recovery — restart if context pressure triggered checkpoint
+  if [[ -f "$MATH_LOG_DIR/.checkpoint-requested" ]]; then
+    echo -e "${YELLOW}CHECKPOINT: Agent checkpointed due to context pressure.${NC}"
+    rm -f "$MATH_LOG_DIR/.checkpoint-requested"
+    local remaining
+    remaining=$(count_sorrys)
+
+    if [[ "$remaining" -gt 0 && -f "results/prove-checkpoint.md" ]]; then
+      echo -e "${YELLOW}Restarting prove phase with checkpoint context...${NC}"
+      PROVE_CHECKPOINT="results/prove-checkpoint.md" run_prove_monolithic "$spec_file"
+    fi
+  fi
+}
+
+run_prove_chunked() {
+  local spec_file="${1:?Usage: math.sh prove <spec-file>}"
+
+  if [[ ! -f "$spec_file" ]]; then
+    echo -e "${RED}Error: Spec file not found: $spec_file${NC}" >&2
+    exit 1
+  fi
+
+  validate_build_env || exit 1
+
+  local lean_count
+  lean_count=$(find_lean_files | wc -l | tr -d ' ')
+  if [[ "$lean_count" -eq 0 ]]; then
+    echo -e "${RED}Error: No .lean files found. Run 'math.sh formalize' first.${NC}" >&2
+    exit 1
+  fi
+
+  echo ""
+  echo -e "${GREEN}======================================================${NC}"
+  echo -e "${GREEN}  PROVE PHASE (CHUNKED) -- Per-Batch Sorry Elimination${NC}"
+  echo -e "${GREEN}======================================================${NC}"
+  echo -e "  Spec:    $spec_file ${YELLOW}(READ-ONLY)${NC}"
+  echo -e "  Build:   $LAKE_BUILD"
+  echo ""
+
+  lock_spec "$spec_file"
+  ensure_hooks_executable
+  export MATH_PHASE="prove"
+  start_phase_timer
+
+  trap "unlock_spec '$spec_file' 2>/dev/null || true" EXIT
+
+  # Step 1: Enumerate and batch sorrys
+  echo -e "${CYAN}Enumerating sorrys...${NC}"
+  local sorry_data
+  sorry_data=$(./scripts/enumerate-sorrys.sh "$LEAN_DIR")
+  local total_sorrys
+  total_sorrys=$(echo "$sorry_data" | grep -c '.' || echo 0)
+  echo -e "  Found ${BOLD}${total_sorrys}${NC} sorry(s)"
+
+  if [[ "$total_sorrys" -eq 0 ]]; then
+    echo -e "${GREEN}No sorrys to prove!${NC}"
+    end_phase_timer "prove"
+    return 0
+  fi
+
+  local batches
+  batches=$(echo "$sorry_data" | python3 scripts/batch-sorrys.py --batch-size 5)
+  local batch_count
+  batch_count=$(echo "$batches" | grep -c '.' || echo 0)
+  echo -e "  Organized into ${BOLD}${batch_count}${NC} batch(es)"
+  echo ""
+
+  # Step 2: Process each batch as a fresh sub-agent
+  local batch_num=0
+
+  while IFS= read -r batch_json; do
+    batch_num=$((batch_num + 1))
+    local batch_files
+    batch_files=$(echo "$batch_json" | python3 -c "import json,sys; [print(f) for f in json.load(sys.stdin)['files']]")
+    local batch_sorrys
+    batch_sorrys=$(echo "$batch_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['sorrys']))")
+    local batch_theorems
+    batch_theorems=$(echo "$batch_json" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for s in d['sorrys']:
+    print(f\"  - {s['theorem']} ({s['file']}:{s['line']})\")
+")
+
+    echo -e "${GREEN}── Batch $batch_num/$batch_count ($batch_sorrys sorrys) ──${NC}"
+    echo "$batch_theorems"
+    echo ""
+
+    local file_list
+    file_list=$(echo "$batch_files" | tr '\n' ', ')
+
+    local exit_code=0
+    claude \
+      --output-format stream-json \
+      --max-turns 25 \
+      --append-system-prompt "$(cat "$PROMPT_DIR/math-prove.md")
+
+## Context (Batch $batch_num/$batch_count)
+- Spec: $spec_file (READ-ONLY)
+- Target files: $file_list
+- Domain context: DOMAIN_CONTEXT.md (append-only: DOES NOT APPLY section)
+- Build: $LAKE_BUILD
+- Sorrys in this batch: $batch_sorrys
+
+## Batch Targets
+$batch_theorems
+
+Focus ONLY on the sorrys listed above. Do not attempt sorrys in other files/batches.
+Replace each sorry with a real proof using Edit. Run the build command after each change.
+If a theorem is unprovable after 5 attempts, record it in DOMAIN_CONTEXT.md and move on." \
+      --allowed-tools "Read,Edit,Bash,Glob,Grep,Write" \
+      -p "Prove the following sorrys (batch $batch_num/$batch_count). Focus only on these targets:
+$batch_theorems
+
+Replace each sorry with a real proof using Edit. Run the build command after each change." \
+      > "$MATH_LOG_DIR/prove-batch-${batch_num}.log" 2>&1 || exit_code=$?
+
+    _phase_summary "prove-batch-${batch_num}" "$exit_code"
+    echo ""
+  done <<< "$batches"
+
+  # Step 3: Final verification build
+  echo -e "${CYAN}Final verification build...${NC}"
+  local final_sorrys
+  final_sorrys=$(count_sorrys)
+  echo -e "  Remaining sorrys: ${BOLD}${final_sorrys}${NC}"
+
+  if [[ "$final_sorrys" -gt 0 ]]; then
+    echo -e "${YELLOW}Not all sorrys eliminated. ${final_sorrys} remain.${NC}"
+  else
+    echo -e "${GREEN}All sorrys eliminated!${NC}"
+  fi
+
+  eval "$LAKE_BUILD" > "$MATH_LOG_DIR/prove-final-build.log" 2>&1 || true
+
+  end_phase_timer "prove"
+}
+
+run_prove() {
+  local spec_file="${1:?Usage: math.sh prove <spec-file>}"
+
+  if [[ -x "./scripts/enumerate-sorrys.sh" ]] && [[ -f "scripts/batch-sorrys.py" ]]; then
+    run_prove_chunked "$spec_file"
+  else
+    run_prove_monolithic "$spec_file"
+  fi
 }
 
 run_polish() {
@@ -636,25 +809,34 @@ run_polish() {
   # Unlock specs and clean scratch on exit
   trap "unlock_spec '$spec_file' 2>/dev/null || true; rm -f scratch/lint_check.lean 2>/dev/null || true" EXIT
 
+  # T3: Start checkpoint monitor
+  local checkpoint_pid=""
+  if [[ -x "./scripts/context-checkpoint.sh" ]]; then
+    ./scripts/context-checkpoint.sh "$MATH_PHASE" --threshold 40 &
+    checkpoint_pid=$!
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
     --append-system-prompt "$(cat "$PROMPT_DIR/math-polish.md")
 
 ## Context
-- Spec file: $spec_file (READ-ONLY -- OS-enforced, do not modify)
-- Construction docs: $(find "$SPEC_DIR" -name "construction-*" -type f 2>/dev/null | wc -l | tr -d ' ') construction doc(s) in $SPEC_DIR (use Glob to discover)
-- Domain context: DOMAIN_CONTEXT.md
-- Build command: $LAKE_BUILD
-- Style guide: STYLE_GUIDE.md (read sections 1-4 for reference)
-- Scratch directory: scratch/ (for lint_check.lean)
+- Spec: $spec_file (READ-ONLY)
+- Build: $LAKE_BUILD
 - Construction log: CONSTRUCTION_LOG.md (write naming warnings here)
-- .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover)
 
 Read the .lean files, apply Mathlib style fixes, run #lint, flag naming issues. Run '$LAKE_BUILD' after each change." \
     --allowed-tools "Read,Edit,Write,Bash,Glob,Grep" \
     -p "Polish all .lean files for Mathlib style compliance: add doc strings, module docstrings, copyright headers, fix formatting. Run '$LAKE_BUILD' after each change. Run #lint via scratch/lint_check.lean. Flag naming issues in CONSTRUCTION_LOG.md." \
     > "$MATH_LOG_DIR/polish.log" 2>&1 || exit_code=$?
+
+  # T3: Stop checkpoint monitor
+  if [[ -n "$checkpoint_pid" ]]; then
+    kill "$checkpoint_pid" 2>/dev/null || true
+    wait "$checkpoint_pid" 2>/dev/null || true
+  fi
+  rm -f "$MATH_LOG_DIR/.checkpoint-requested"
 
   _phase_summary "polish" "$exit_code"
   end_phase_timer "polish"
@@ -697,17 +879,14 @@ run_audit() {
     --append-system-prompt "$(cat "$PROMPT_DIR/math-audit.md")
 
 ## Context
-- Spec file: $spec_file (READ-ONLY)
-- .lean files: $(find_lean_files | wc -l | tr -d ' ') .lean file(s) (use Glob '**/*.lean' to discover) (ALL READ-ONLY)
-- Build command: $LAKE_BUILD
-- Current sorry count: $sorry_count
-- Current axiom/unsafe count: $axiom_count
-- Construction log: $_SD/CONSTRUCTION_LOG.md (WRITE to this)
-- Domain context: $_SD/DOMAIN_CONTEXT.md
+- Spec: $spec_file (READ-ONLY)
+- Build: $LAKE_BUILD
+- Sorrys: $sorry_count | Axioms: $axiom_count
+- Construction log: CONSTRUCTION_LOG.md (WRITE to this)
 
-Run '$LAKE_BUILD', audit all .lean files, check spec coverage. Write results to $_SD/CONSTRUCTION_LOG.md." \
+Run '$LAKE_BUILD', audit all .lean files, check spec coverage. Write results to CONSTRUCTION_LOG.md." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
-    -p "Audit the formalization. Run '$LAKE_BUILD', check for sorry/axiom, verify spec coverage. Write results to $_SD/CONSTRUCTION_LOG.md." \
+    -p "Audit the formalization. Run '$LAKE_BUILD', check for sorry/axiom, verify spec coverage. Write results to CONSTRUCTION_LOG.md." \
     > "$MATH_LOG_DIR/audit.log" 2>&1 || exit_code=$?
 
   _phase_summary "audit" "$exit_code"
@@ -733,8 +912,8 @@ run_log() {
   # Archive results
   mkdir -p "$results_path"
   cp "$spec_file" "$results_path/spec.md" 2>/dev/null || true
-  if [[ -f "$_SD/CONSTRUCTION_LOG.md" ]]; then
-    cp "$_SD/CONSTRUCTION_LOG.md" "$results_path/audit.md" 2>/dev/null || true
+  if [[ -f "CONSTRUCTION_LOG.md" ]]; then
+    cp "CONSTRUCTION_LOG.md" "$results_path/audit.md" 2>/dev/null || true
   fi
 
   # Copy .lean files to results for archival
@@ -787,7 +966,7 @@ SURVEY -> SPECIFY -> CONSTRUCT -> FORMALIZE -> PROVE -> POLISH -> AUDIT complete
 - Axiom count: $(check_axioms)
 
 ---
-*Generated by [mathematics-kit](https://github.com/kurtbell87/mathematics-kit)*
+*Generated by [claude-mathematics-kit](https://github.com/kurtbell87/claude-mathematics-kit)*
 EOF
 )")
 
@@ -857,17 +1036,17 @@ run_full() {
     run_audit "$spec_file"
 
     # Check for revision request
-    if [[ -f "$_SD/REVISION.md" ]]; then
+    if [[ -f "REVISION.md" ]]; then
       revision_count=$((revision_count + 1))
 
       if (( revision_count >= MAX_REVISIONS )); then
         echo -e "\n${RED}Max revisions reached ($MAX_REVISIONS). Stopping.${NC}"
-        echo -e "${RED}Manual intervention needed. See $_SD/REVISION.md.${NC}"
+        echo -e "${RED}Manual intervention needed. See REVISION.md.${NC}"
         return 1
       fi
 
       local restart_from
-      restart_from=$(grep -m1 'restart_from:' "$_SD/REVISION.md" 2>/dev/null | sed 's/.*restart_from:[[:space:]]*//' || echo "CONSTRUCT")
+      restart_from=$(grep -m1 'restart_from:' "REVISION.md" 2>/dev/null | sed 's/.*restart_from:[[:space:]]*//' || echo "CONSTRUCT")
 
       echo -e "\n${YELLOW}======================================================${NC}"
       echo -e "${YELLOW}  REVISION $revision_count/$MAX_REVISIONS -- Restarting from $restart_from${NC}"
@@ -892,8 +1071,8 @@ with open('$revision_log', 'w') as f:
 
       # Archive the revision
       mkdir -p "$RESULTS_DIR/revisions"
-      cp "$_SD/REVISION.md" "$RESULTS_DIR/revisions/revision-${revision_count}.md"
-      rm "$_SD/REVISION.md"
+      cp "REVISION.md" "$RESULTS_DIR/revisions/revision-${revision_count}.md"
+      rm "REVISION.md"
 
       # Restart from the appropriate phase
       case "$restart_from" in
@@ -910,7 +1089,7 @@ with open('$revision_log', 'w') as f:
           echo -e "\n${YELLOW}--- Polish complete. Auditing... ---${NC}\n"
           run_audit "$spec_file"
           # Check again for revision
-          if [[ -f "$_SD/REVISION.md" ]]; then
+          if [[ -f "REVISION.md" ]]; then
             continue
           fi
           break
@@ -994,7 +1173,7 @@ print(total)
 select_next_construction() {
   # R5.2: Use topological sort to select the next non-blocked construction
   local result
-  result=$(python3 "$_SD/scripts/resolve-deps.py" "$CONSTRUCTIONS_FILE" --next 2>/dev/null) || return 0
+  result=$(python3 scripts/resolve-deps.py "$CONSTRUCTIONS_FILE" --next 2>/dev/null) || return 0
   if [[ -z "$result" ]]; then
     return 0
   fi
@@ -1008,7 +1187,7 @@ select_next_construction() {
 
 resolve_construction_order() {
   # R5.2: Get all actionable constructions in dependency order
-  python3 "$_SD/scripts/resolve-deps.py" "$CONSTRUCTIONS_FILE" 2>/dev/null
+  python3 scripts/resolve-deps.py "$CONSTRUCTIONS_FILE" 2>/dev/null
 }
 
 register_proved_theorem() {
@@ -1021,13 +1200,13 @@ register_proved_theorem() {
   lean_files=$(find_lean_files | grep -i "$cid" || true)
 
   if [[ -n "$lean_files" ]]; then
-    echo "" >> "$_SD/DOMAIN_CONTEXT.md"
-    echo "### Proved: $cid" >> "$_SD/DOMAIN_CONTEXT.md"
-    echo "Import with:" >> "$_SD/DOMAIN_CONTEXT.md"
+    echo "" >> DOMAIN_CONTEXT.md
+    echo "### Proved: $cid" >> DOMAIN_CONTEXT.md
+    echo "Import with:" >> DOMAIN_CONTEXT.md
     while IFS= read -r f; do
       local import_path
       import_path=$(echo "$f" | sed 's|/|.|g' | sed 's|\.lean$||' | sed 's|^\./||')
-      echo "  \`import $import_path\`" >> "$_SD/DOMAIN_CONTEXT.md"
+      echo "  \`import $import_path\`" >> DOMAIN_CONTEXT.md
     done <<< "$lean_files"
   fi
 }
@@ -1046,7 +1225,7 @@ mark_downstream_blocked() {
   fi
 
   local blocked_json
-  blocked_json=$(python3 "$_SD/scripts/resolve-deps.py" "$CONSTRUCTIONS_FILE" --mark-blocked "$priority" 2>/dev/null) || return 0
+  blocked_json=$(python3 scripts/resolve-deps.py "$CONSTRUCTIONS_FILE" --mark-blocked "$priority" 2>/dev/null) || return 0
 
   local blocked_list
   blocked_list=$(echo "$blocked_json" | python3 -c "import json,sys; [print(p) for p in json.load(sys.stdin).get('blocked',[])]" 2>/dev/null) || return 0
@@ -1179,7 +1358,7 @@ run_program() {
     echo -e "${CYAN}── Cycle $cycle/$max_cycles ──${NC}"
 
     # Check for revision
-    if [[ -f "$_SD/REVISION.md" ]]; then
+    if [[ -f "REVISION.md" ]]; then
       echo -e "${YELLOW}REVISION.md exists — handle revision before continuing.${NC}"
       return 1
     fi
@@ -1220,7 +1399,7 @@ run_program() {
         run_prove "$spec_file"
         run_polish "$spec_file"
         run_audit "$spec_file"
-        if [[ ! -f "$_SD/REVISION.md" ]]; then
+        if [[ ! -f "REVISION.md" ]]; then
           run_log "$spec_file"
           update_construction_status "$spec_file" "Audited"
           register_proved_theorem "$spec_file"
@@ -1233,7 +1412,7 @@ run_program() {
         run_prove "$spec_file"
         run_polish "$spec_file"
         run_audit "$spec_file"
-        if [[ ! -f "$_SD/REVISION.md" ]]; then
+        if [[ ! -f "REVISION.md" ]]; then
           run_log "$spec_file"
           update_construction_status "$spec_file" "Audited"
           register_proved_theorem "$spec_file"
@@ -1245,7 +1424,7 @@ run_program() {
         run_prove "$spec_file"
         run_polish "$spec_file"
         run_audit "$spec_file"
-        if [[ ! -f "$_SD/REVISION.md" ]]; then
+        if [[ ! -f "REVISION.md" ]]; then
           run_log "$spec_file"
           update_construction_status "$spec_file" "Audited"
           register_proved_theorem "$spec_file"
@@ -1285,14 +1464,22 @@ case "${1:-help}" in
   specify)    shift; run_specify "$@" ;;
   construct)  shift; run_construct "$@" ;;
   formalize)  shift; run_formalize "$@" ;;
-  prove)      shift; run_prove "$@" ;;
+  prove)
+    shift
+    if [[ "${1:-}" == "--monolithic" ]]; then
+      shift
+      run_prove_monolithic "$@"
+    else
+      run_prove "$@"
+    fi
+    ;;
   polish)     shift; run_polish "$@" ;;
   audit)      shift; run_audit "$@" ;;
   log)        shift; run_log "$@" ;;
   full)       shift; run_full "$@" ;;
   program)    shift; run_program "$@" ;;
   status)     run_status ;;
-  watch)      shift; python3 "$_SD/scripts/math-watch.py" "$@" ;;
+  watch)      shift; python3 scripts/math-watch.py "$@" ;;
   help|*)
     echo "Usage: math.sh <phase> [args]"
     echo ""

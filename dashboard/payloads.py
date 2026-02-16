@@ -5,6 +5,7 @@ import datetime as dt
 import filecmp
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -421,6 +422,10 @@ def artifact_payload(
             except Exception:
                 pass
 
+    # Strip ANSI escape codes from text/log/markdown for clean display
+    if kind in {"text", "markdown"}:
+        text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
     rel_path = str(resolved.relative_to(root))
     return {
         "project_id": project_id,
@@ -438,15 +443,20 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
     project_root = Path(str(project["project_root"])).expanduser().resolve()
     orchestration_kit_root = Path(str(project["orchestration_kit_root"])).expanduser().resolve()
 
+    # Detect greenfield mode: state files live under .kit/ instead of project root
+    kit_state_dir = project_root / ".kit"
+    is_greenfield = kit_state_dir.is_dir()
+    kit_prefix = ".kit/" if is_greenfield else ""
+
     fixed_project_docs = [
-        "LAST_TOUCH.md",
-        "DOMAIN_PRIORS.md",
-        "CONSTRUCTION_LOG.md",
-        "CONSTRUCTIONS.md",
-        "DOMAIN_CONTEXT.md",
-        "RESEARCH_LOG.md",
-        "QUESTIONS.md",
-        "PRD.md",
+        f"{kit_prefix}LAST_TOUCH.md",
+        f"{kit_prefix}DOMAIN_PRIORS.md",
+        f"{kit_prefix}CONSTRUCTION_LOG.md",
+        f"{kit_prefix}CONSTRUCTIONS.md",
+        f"{kit_prefix}DOMAIN_CONTEXT.md",
+        f"{kit_prefix}RESEARCH_LOG.md",
+        f"{kit_prefix}QUESTIONS.md",
+        f"{kit_prefix}PRD.md",
         "CLAUDE.md",
         "README.md",
     ]
@@ -514,16 +524,22 @@ def project_docs_payload(project_id: str) -> dict[str, Any]:
     for rel in fixed_project_docs:
         add_entry("project", rel, required=True)
 
-    for rel in fixed_master_docs:
-        add_entry("orchestration-kit", rel, required=False)
+    # In greenfield mode, .kit/ files supersede orchestration-kit templates
+    if not is_greenfield:
+        for rel in fixed_master_docs:
+            add_entry("orchestration-kit", rel, required=False)
 
-    for folder in ("docs", "specs", "experiments"):
-        base = project_root / folder
-        if not base.is_dir():
-            continue
-        for p in sorted(base.glob("*.md"))[:80]:
-            rel = str(p.relative_to(project_root))
-            add_entry("project", rel, required=False)
+    scan_roots = [project_root]
+    if is_greenfield:
+        scan_roots.append(kit_state_dir)
+    for scan_root in scan_roots:
+        for folder in ("docs", "specs", "experiments"):
+            base = scan_root / folder
+            if not base.is_dir():
+                continue
+            for p in sorted(base.glob("*.md"))[:80]:
+                rel = str(p.relative_to(project_root))
+                add_entry("project", rel, required=False)
 
     entries.sort(
         key=lambda x: (
