@@ -21,36 +21,20 @@ source .orchestration-kit.env
 
 This only needs to run once per project. It creates symlinks, deploys `.claude/` prompts/hooks, and writes `.orchestration-kit.env`.
 
-## Environment: Nested Session Guard
-
-`tools/kit plan`, `tools/kit seed`, and `tools/kit execute` spawn `claude --print` as subprocesses. When running inside a Claude Code session, the `CLAUDECODE` env var blocks nested launches. **You must clear it** in every `tools/kit` invocation that triggers sub-agent LLM calls:
-
-```bash
-CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit plan ...
-CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit seed ...
-CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit execute ...
-```
-
-Direct phase runs (`tools/kit tdd red ...`) also spawn `claude` sub-agents, so the same rule applies:
-
-```bash
-CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit --json tdd red docs/my-feature.md
-```
-
-**Always run these commands in the background** (use `run_in_background: true` on Bash tool calls) and check exit codes only. Do not pull stdout into your context window.
-
 ## How to Run Phases
 
 ```bash
-CLAUDECODE= PROJECT_ROOT=<project-root> python3 tools/kit --json <kit> <phase> [args...]
+PROJECT_ROOT=<project-root> python3 tools/kit --json <kit> <phase> [args...]
 ```
 
 Examples:
 ```bash
-CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json tdd red docs/my-feature.md
-CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json research status
-CLAUDECODE= PROJECT_ROOT=/path/to/project python3 tools/kit --json math survey specs/my-construction.md
+PROJECT_ROOT=/path/to/project python3 tools/kit --json tdd red docs/my-feature.md
+PROJECT_ROOT=/path/to/project python3 tools/kit --json research status
+PROJECT_ROOT=/path/to/project python3 tools/kit --json math survey specs/my-construction.md
 ```
+
+**Always run these commands in the background** (use `run_in_background: true` on Bash tool calls) and check exit codes only. Do not pull stdout into your context window.
 
 Each run produces artifacts under `runs/<run_id>/`:
 - `capsules/<kit>_<phase>.md` — 30-line max summary (read this first)
