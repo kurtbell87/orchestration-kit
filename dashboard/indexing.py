@@ -45,9 +45,10 @@ def _insert_run(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
         INSERT INTO runs(
           project_id, run_id, parent_run_id, kit, phase, started_at, finished_at,
           exit_code, status, capsule_path, manifest_path, log_path, events_path,
-          cwd, project_root, orchestration_kit_root, agent_runtime, host, pid, reasoning
+          cwd, project_root, orchestration_kit_root, agent_runtime, host, pid, reasoning,
+          experiment_name, verdict
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run["project_id"],
@@ -70,6 +71,8 @@ def _insert_run(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
             run["host"],
             run["pid"],
             run.get("reasoning"),
+            run.get("experiment_name"),
+            run.get("verdict"),
         ),
     )
 

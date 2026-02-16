@@ -123,6 +123,48 @@ Configure via env vars:
 
 Or run all phases in one command: `./tdd.sh full docs/<feature>.md`
 
+### Cross-Kit Subprocess Launching (Optional)
+
+TDD can optionally request work from other kits (Research, Math) via the interop queue. Use this when your implementation work surfaces needs that belong to another domain.
+
+**When to use:**
+- Need Research to investigate an algorithmic question before you can implement (e.g., "which hashing strategy is fastest for this workload?")
+- Need Math to formally verify a construction your code depends on
+- Need a status check from another kit
+
+**How to create a request:**
+
+```bash
+tools/kit request \
+  --from tdd --from-phase <current_phase> \
+  --to research --action research.full \
+  --run-id <current_run_id> \
+  --arg "Which sorting algorithm minimizes cache misses for our data distribution?" \
+  --arg "experiments/sorting-perf.md" \
+  --must-read "RESEARCH_LOG.md" \
+  --reasoning "TDD needs empirical answer before implementing sort module" \
+  --json
+```
+
+**How to execute it:**
+
+```bash
+tools/pump --once --request <request_id> --json
+```
+
+The response lands in `interop/responses/<request_id>.json` with status `ok|blocked|failed`, child run pointers, and deliverables.
+
+**Available cross-kit actions:**
+- `research.survey`, `research.frame`, `research.run`, `research.read`, `research.cycle`, `research.full`, `research.status` — Research phases
+- `math.survey`, `math.specify`, `math.construct`, `math.formalize`, `math.prove`, `math.full`, `math.status` — Math phases
+- `tdd.status` — status check from another kit back to TDD
+
+**Key parameters:**
+- `--must-read`: Files the child agent MUST read for context
+- `--allowed-path`: Glob patterns restricting what the child can read (isolation)
+- `--deliverable`: Expected output globs
+- `--reasoning`: 1-3 sentence justification (appears in the DAG and audit trail)
+
 ### Critical Rules
 
 - **You are the orchestrator, not the implementor.** Steps 2-5 MUST use `./tdd.sh` commands.

@@ -16,6 +16,18 @@ def _migrate_reasoning_columns(conn: sqlite3.Connection) -> None:
                 raise
 
 
+def _migrate_experiment_columns(conn: sqlite3.Connection) -> None:
+    for stmt in [
+        "ALTER TABLE runs ADD COLUMN experiment_name TEXT",
+        "ALTER TABLE runs ADD COLUMN verdict TEXT",
+    ]:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -86,3 +98,4 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _migrate_reasoning_columns(conn)
+    _migrate_experiment_columns(conn)

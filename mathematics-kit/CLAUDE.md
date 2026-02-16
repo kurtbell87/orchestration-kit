@@ -66,6 +66,47 @@ cat $MATH_LOG_DIR/formalize.log # Full formalize phase transcript
 
 This prevents verbose Lean4 output from flooding the orchestrator's context window.
 
+## Cross-Kit Subprocess Launching (Optional)
+
+Math can optionally request work from other kits (TDD, Research) via the interop queue. Use this when your formalization work surfaces needs that belong to another domain.
+
+**When to use:**
+- Need TDD to build tooling or scripts that support the math pipeline (e.g., custom Lean4 linters, build helpers)
+- Need Research to investigate an empirical question that informs a construction choice (e.g., "which Mathlib approach has fewer sorry dependencies?")
+- Need a status check from another kit
+
+**How to create a request:**
+
+```bash
+tools/kit request \
+  --from math --from-phase <current_phase> \
+  --to tdd --action tdd.full \
+  --run-id <current_run_id> \
+  --arg "docs/lean-error-parser.md" \
+  --must-read "LAST_TOUCH.md" \
+  --reasoning "Math needs a better error parser for opaque Lean4 type errors" \
+  --json
+```
+
+**How to execute it:**
+
+```bash
+tools/pump --once --request <request_id> --json
+```
+
+The response lands in `interop/responses/<request_id>.json` with status `ok|blocked|failed`, child run pointers, and deliverables.
+
+**Available cross-kit actions:**
+- `tdd.red`, `tdd.green`, `tdd.refactor`, `tdd.ship`, `tdd.full` — TDD phases
+- `research.survey`, `research.frame`, `research.run`, `research.read`, `research.cycle`, `research.full`, `research.status` — Research phases
+- `math.status` — status check from another kit back to math
+
+**Key parameters:**
+- `--must-read`: Files the child agent MUST read for context
+- `--allowed-path`: Glob patterns restricting what the child can read (isolation)
+- `--deliverable`: Expected output globs
+- `--reasoning`: 1-3 sentence justification (appears in the DAG and audit trail)
+
 ## Universal Rules
 - **NEVER** use `axiom`, `unsafe`, `native_decide`, or `admit`
 - **NEVER** use `chmod`, `sudo`, or permission-modifying commands

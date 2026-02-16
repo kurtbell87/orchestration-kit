@@ -164,6 +164,9 @@
     .badge-failed { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
     .badge-running { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
     .badge-stale { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+    .badge-confirmed { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+    .badge-refuted { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+    .badge-inconclusive { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
 
     /* Expansion row */
     .expansion-row:hover { background: transparent !important; }
@@ -261,6 +264,16 @@
       font-family: var(--sans);
     }
     .exp-artifact-btn:hover { border-color: var(--accent); }
+    .result-artifacts-section { margin-top: 8px; }
+    .result-artifacts-section h5 { margin: 0 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px; }
+    .result-group-heading { font-size: 10px; color: var(--muted); margin: 6px 0 2px; }
+    .experiment-name { font-family: var(--sans); font-weight: 600; font-size: 12px; }
+    .experiment-runid { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .csv-table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 11px; font-family: var(--mono); }
+    .csv-table th, .csv-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+    .csv-table th { background: rgba(30, 41, 59, 0.6); font-weight: 600; color: var(--muted); }
+    .csv-table tbody tr:hover { background: rgba(30, 41, 59, 0.3); }
+    .image-container { text-align: center; padding: 8px; }
 
     /* DAG area */
     .dag-area { flex: 1; overflow: auto; position: relative; }
@@ -463,6 +476,9 @@
     [data-theme="light"] .badge-failed { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
     [data-theme="light"] .badge-running { background: rgba(217, 119, 6, 0.1); color: #d97706; }
     [data-theme="light"] .badge-stale { background: rgba(147, 51, 234, 0.1); color: #9333ea; }
+    [data-theme="light"] .badge-confirmed { background: rgba(22, 163, 74, 0.1); color: #16a34a; }
+    [data-theme="light"] .badge-refuted { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
+    [data-theme="light"] .badge-inconclusive { background: rgba(217, 119, 6, 0.1); color: #d97706; }
     [data-theme="light"] .runs-table tbody tr.run-row:hover { background: rgba(226, 232, 240, 0.5); }
     [data-theme="light"] .capsule-popover { box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
     [data-theme="light"] .capsule-popover-fade { background: linear-gradient(transparent, var(--panel)); }
@@ -525,6 +541,7 @@
     <button class="tab-btn active" data-tab="runs">Runs</button>
     <button class="tab-btn" data-tab="dag">DAG</button>
     <button class="tab-btn" data-tab="docs">Docs</button>
+    <button class="tab-btn" data-tab="questions">Questions</button>
   </div>
 
   <!-- Runs tab -->
@@ -540,7 +557,7 @@
             <th data-sort="status">Status</th>
             <th data-sort="kit">Kit</th>
             <th data-sort="phase">Phase</th>
-            <th data-sort="run_id">Run ID</th>
+            <th data-sort="experiment_name">Experiment / Run</th>
             <th data-sort="started_at">Started</th>
             <th>Duration</th>
             <th>Exit</th>
@@ -574,6 +591,14 @@
         <div class="docs-meta" id="docs-meta">Select a project to load state files.</div>
         <div class="docs-body markdown" id="docs-body">(no file selected)</div>
       </div>
+    </div>
+  </div>
+
+  <!-- Questions tab -->
+  <div class="tab-panel" id="tab-questions">
+    <div class="docs-content-area">
+      <div class="docs-meta" id="questions-meta">Research question agenda</div>
+      <div class="docs-body markdown" id="questions-body"><span class="muted">Loading QUESTIONS.md...</span></div>
     </div>
   </div>
 
@@ -647,6 +672,15 @@ function fmtStatusBadge(status, isStale) {
   if (status === 'failed') return '<span class="badge badge-failed">failed</span>';
   if (status === 'running') return '<span class="badge badge-running">running</span>';
   return '<span class="badge">' + escapeHtml(status || 'unknown') + '</span>';
+}
+
+function fmtVerdictBadge(verdict) {
+  if (!verdict) return '';
+  const v = String(verdict).toUpperCase();
+  if (v === 'CONFIRMED') return ' <span class="badge badge-confirmed">confirmed</span>';
+  if (v === 'REFUTED') return ' <span class="badge badge-refuted">refuted</span>';
+  if (v === 'INCONCLUSIVE') return ' <span class="badge badge-inconclusive">inconclusive</span>';
+  return ' <span class="badge">' + escapeHtml(verdict) + '</span>';
 }
 
 function artifactBtns(run) {
@@ -777,7 +811,11 @@ function renderLog(text) {
 }
 
 function renderArtifact(payload) {
-  if (payload.kind === 'markdown') {
+  if (payload.kind === 'image' && payload.data_base64) {
+    return '<div class="image-container"><img src="data:' + escapeHtml(payload.mime || 'image/png') + ';base64,' + payload.data_base64 + '" style="max-width:100%;max-height:500px" /></div>';
+  } else if (payload.kind === 'csv') {
+    return renderCsv(payload.text || '');
+  } else if (payload.kind === 'markdown') {
     return '<div class="markdown">' + renderMarkdown(payload.text || '') + '</div>';
   } else if (payload.kind === 'json' || payload.kind === 'jsonl') {
     return renderJson(payload.text || '');
@@ -786,6 +824,41 @@ function renderArtifact(payload) {
   } else {
     return '<pre style="margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:11px">' + escapeHtml(payload.text || '') + '</pre>';
   }
+}
+
+function renderCsv(text) {
+  const lines = String(text || '').trim().split('\n').filter(l => l.trim());
+  if (!lines.length) return '<pre class="muted">(empty CSV)</pre>';
+  const parseRow = (line) => {
+    const cells = [];
+    let current = '', inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuote) {
+        if (ch === '"' && line[i+1] === '"') { current += '"'; i++; }
+        else if (ch === '"') { inQuote = false; }
+        else { current += ch; }
+      } else {
+        if (ch === '"') { inQuote = true; }
+        else if (ch === ',') { cells.push(current.trim()); current = ''; }
+        else { current += ch; }
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+  const headers = parseRow(lines[0]);
+  let html = '<table class="csv-table"><thead><tr>';
+  for (const h of headers) html += '<th>' + escapeHtml(h) + '</th>';
+  html += '</tr></thead><tbody>';
+  for (let i = 1; i < lines.length; i++) {
+    const cells = parseRow(lines[i]);
+    html += '<tr>';
+    for (let j = 0; j < headers.length; j++) html += '<td>' + escapeHtml(cells[j] || '') + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  return html;
 }
 
 /* ─── DAG rendering ─── */
@@ -809,12 +882,13 @@ function renderDag(data) {
     const src = nodeMap[e.source];
     const tgt = nodeMap[e.target];
     if (!src || !tgt) continue;
-    const x1 = src.x + src.width, y1 = src.y + src.height / 2;
-    const x2 = tgt.x, y2 = tgt.y + tgt.height / 2;
-    const cx1 = x1 + (x2 - x1) * 0.4, cx2 = x2 - (x2 - x1) * 0.4;
-    const stroke = e.type === 'interop' ? '#0ea5e9' : e.type === 'inferred' ? '#6366f1' : '#475569';
-    const dash = e.type === 'interop' ? ' stroke-dasharray="6 3"' : e.type === 'inferred' ? ' stroke-dasharray="4 4"' : '';
-    svg += '<path d="M '+x1+' '+y1+' C '+cx1+' '+y1+', '+cx2+' '+y2+', '+x2+' '+y2+'" fill="none" stroke="'+stroke+'" stroke-width="1.5"'+dash+' marker-end="url(#arrow)"/>';
+    // Top-to-bottom: source bottom-center → target top-center
+    const x1 = src.x + src.width / 2, y1 = src.y + src.height;
+    const x2 = tgt.x + tgt.width / 2, y2 = tgt.y;
+    const cy1 = y1 + (y2 - y1) * 0.4, cy2 = y2 - (y2 - y1) * 0.4;
+    const stroke = e.type === 'experiment' ? '#f472b6' : e.type === 'interop' ? '#0ea5e9' : e.type === 'inferred' ? '#6366f1' : '#475569';
+    const dash = e.type === 'experiment' ? ' stroke-dasharray="8 4"' : e.type === 'interop' ? ' stroke-dasharray="6 3"' : e.type === 'inferred' ? ' stroke-dasharray="4 4"' : '';
+    svg += '<path d="M '+x1+' '+y1+' C '+x1+' '+cy1+', '+x2+' '+cy2+', '+x2+' '+y2+'" fill="none" stroke="'+stroke+'" stroke-width="1.5"'+dash+' marker-end="url(#arrow)"/>';
   }
 
   for (const n of data.nodes) {
@@ -829,6 +903,8 @@ function renderDag(data) {
       const elapsed = Math.floor((Date.now() - new Date(n.started_at).getTime()) / 1000);
       const mm = Math.floor(elapsed / 60), ss = elapsed % 60;
       svg += '<text x="'+(n.x+22)+'" y="'+(n.y+32)+'" fill="#f59e0b" font-size="9" font-family="ui-monospace,monospace">'+mm+'m '+ss+'s</text>';
+    } else if (n.experiment_name) {
+      svg += '<text x="'+(n.x+22)+'" y="'+(n.y+32)+'" fill="#f472b6" font-size="9" font-family="-apple-system,sans-serif">'+escapeHtml(n.experiment_name.length>22?n.experiment_name.slice(0,22)+'...':n.experiment_name)+'</text>';
     } else {
       svg += '<text x="'+(n.x+22)+'" y="'+(n.y+32)+'" fill="#94a3b8" font-size="9" font-family="ui-monospace,monospace">'+escapeHtml(n.id.length>20?n.id.slice(0,20)+'...':n.id)+'</text>';
     }
@@ -842,6 +918,7 @@ function renderDag(data) {
     + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#475569"></span> Parent</div>'
     + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#0ea5e9;border-top-style:dashed"></span> Interop</div>'
     + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#6366f1;border-top-style:dashed"></span> Inferred</div>'
+    + '<div class="dag-legend-item"><span class="dag-legend-line" style="border-color:#f472b6;border-top-style:dashed"></span> Experiment</div>'
     + '<div class="dag-legend-title" style="margin-top:4px">Status</div>'
     + '<div class="dag-legend-item"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e"></span> OK</div>'
     + '<div class="dag-legend-item"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444"></span> Failed</div>'
@@ -872,6 +949,7 @@ const TabManager = {
   active: 'runs',
   dagLoaded: false,
   docsLoaded: false,
+  questionsLoaded: false,
 
   switchTo(tabId) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabId));
@@ -884,6 +962,10 @@ const TabManager = {
     if (tabId === 'docs' && !this.docsLoaded) {
       this.docsLoaded = true;
       safeRefresh(() => DocsView.load(true));
+    }
+    if (tabId === 'questions' && !this.questionsLoaded) {
+      this.questionsLoaded = true;
+      safeRefresh(() => QuestionsView.load());
     }
   },
 
@@ -930,18 +1012,22 @@ const RunsView = {
     const tbody = el('runs-tbody');
     const filter = this.searchFilter.toLowerCase();
     const filtered = filter
-      ? this.runs.filter(r => (r.run_id + ' ' + r.kit + ' ' + r.phase + ' ' + r.status).toLowerCase().includes(filter))
+      ? this.runs.filter(r => (r.run_id + ' ' + r.kit + ' ' + r.phase + ' ' + r.status + ' ' + (r.experiment_name||'') + ' ' + (r.verdict||'')).toLowerCase().includes(filter))
       : this.runs;
 
     let html = '';
     for (const r of filtered) {
       const rid = r.run_id || '';
       const isExpanded = this.expandedRunId === rid;
+      const expName = r.experiment_name || '';
+      const expCell = expName
+        ? '<div class="experiment-name">' + escapeHtml(expName) + '</div><div class="experiment-runid">' + escapeHtml(rid.length > 20 ? rid.slice(0,20)+'\u2026' : rid) + '</div>'
+        : '<span class="mono" title="' + escapeHtml(rid) + '">' + escapeHtml(rid.length > 24 ? rid.slice(0, 24) + '\u2026' : rid) + '</span>';
       html += '<tr class="run-row' + (isExpanded ? ' expanded' : '') + '" data-run-id="' + escapeHtml(rid) + '" data-project-id="' + escapeHtml(r.project_id || '') + '">'
-        + '<td>' + fmtStatusBadge(r.status, r.is_stale) + '</td>'
+        + '<td>' + fmtStatusBadge(r.status, r.is_stale) + fmtVerdictBadge(r.verdict) + '</td>'
         + '<td>' + escapeHtml(r.kit || '-') + '</td>'
         + '<td>' + escapeHtml(r.phase || '-') + '</td>'
-        + '<td class="mono" title="' + escapeHtml(rid) + '">' + escapeHtml(rid.length > 24 ? rid.slice(0, 24) + '\u2026' : rid) + '</td>'
+        + '<td title="' + escapeHtml(rid) + '">' + expCell + '</td>'
         + '<td title="' + escapeHtml(r.started_at || '') + '">' + fmtRelativeTime(r.started_at) + '</td>'
         + '<td>' + fmtDuration(r.duration_seconds) + '</td>'
         + '<td class="mono">' + (r.exit_code != null ? escapeHtml(String(r.exit_code)) : '-') + '</td>'
@@ -1044,6 +1130,30 @@ const RunsView = {
       if (paths.log) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.log)+'">Log</button>';
       if (paths.events) rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(paths.events)+'">Events</button>';
       rightHtml += '</div>';
+
+      // Result artifacts from manifest
+      const resultArts = capsuleData.result_artifacts || [];
+      if (resultArts.length) {
+        rightHtml += '<div class="result-artifacts-section"><h5>Result Artifacts</h5>';
+        const groups = {};
+        for (const art of resultArts) {
+          const parts = art.path.split('/results/');
+          const dir = parts.length > 1 ? parts[parts.length - 1].split('/')[0] : '';
+          if (!groups[dir]) groups[dir] = [];
+          groups[dir].push(art);
+        }
+        for (const [dir, arts] of Object.entries(groups)) {
+          if (dir) rightHtml += '<div class="result-group-heading">' + escapeHtml(dir) + '/</div>';
+          rightHtml += '<div class="artifact-buttons" style="margin-bottom:4px">';
+          for (const art of arts) {
+            const fname = art.path.split('/').pop() || art.path;
+            rightHtml += '<button class="exp-artifact-btn" data-pid="'+escapeHtml(pid)+'" data-path="'+escapeHtml(art.path)+'" data-scope="project">' + escapeHtml(fname) + '</button>';
+          }
+          rightHtml += '</div>';
+        }
+        rightHtml += '</div>';
+      }
+
       rightHtml += '<div class="exp-viewer-meta muted" style="font-size:11px;margin-bottom:4px">Click an artifact to view.</div>';
       rightHtml += '<div class="exp-viewer"><div class="muted">(no artifact loaded)</div></div>';
 
@@ -1067,14 +1177,16 @@ const RunsView = {
     }
   },
 
-  async _loadArtifactInViewer(pid, path) {
+  async _loadArtifactInViewer(pid, path, scope) {
     const viewer = document.querySelector('.exp-viewer');
     const meta = document.querySelector('.exp-viewer-meta');
     if (!viewer || !meta) return;
 
     viewer.innerHTML = '<div class="muted">Loading...</div>';
     try {
-      const payload = await api('/api/artifact?' + qs({ project_id: pid, path: path, max_bytes: 220000 }));
+      const params = { project_id: pid, path: path, max_bytes: 220000 };
+      if (scope) params.scope = scope;
+      const payload = await api('/api/artifact?' + qs(params));
       const trunc = payload.truncated ? ' (truncated)' : '';
       meta.textContent = payload.path + ' \u2022 ' + payload.kind + ' \u2022 ' + payload.bytes_read + '/' + payload.bytes_total + 'b' + trunc;
       viewer.innerHTML = renderArtifact(payload);
@@ -1147,7 +1259,7 @@ const RunsView = {
       const expBtn = e.target.closest('.exp-artifact-btn');
       if (expBtn) {
         e.stopPropagation();
-        this._loadArtifactInViewer(expBtn.dataset.pid, expBtn.dataset.path);
+        this._loadArtifactInViewer(expBtn.dataset.pid, expBtn.dataset.path, expBtn.dataset.scope);
         return;
       }
 
@@ -1354,6 +1466,59 @@ const DocsView = {
   }
 };
 
+/* ─── Questions View ─── */
+const QuestionsView = {
+  _loaded: false,
+  _autoRefreshId: null,
+
+  async load() {
+    const pid = preferredProjectId();
+    const meta = el('questions-meta');
+    const body = el('questions-body');
+
+    if (!pid) {
+      meta.textContent = 'Select a project.';
+      body.innerHTML = '<span class="muted">(no project)</span>';
+      return;
+    }
+
+    const paths = ['.kit/QUESTIONS.md', 'QUESTIONS.md'];
+    let payload = null;
+    for (const p of paths) {
+      try {
+        payload = await api('/api/artifact?' + qs({ project_id: pid, path: p, scope: 'project', max_bytes: 220000 }));
+        break;
+      } catch (_) {}
+    }
+
+    if (payload && payload.text) {
+      meta.textContent = payload.path + ' \u2022 ' + payload.bytes_read + '/' + payload.bytes_total + 'b' + (payload.truncated ? ' (truncated)' : '');
+      body.innerHTML = renderMarkdown(payload.text);
+    } else {
+      meta.textContent = 'QUESTIONS.md not found';
+      body.innerHTML = '<span class="muted">No QUESTIONS.md found in project.</span>';
+    }
+    this._loaded = true;
+  },
+
+  startAutoRefresh() {
+    this.stopAutoRefresh();
+    this._autoRefreshId = setInterval(() => {
+      if (TabManager.active === 'questions' && this._loaded) {
+        safeRefresh(() => this.load());
+      }
+    }, 15000);
+  },
+
+  stopAutoRefresh() {
+    if (this._autoRefreshId) { clearInterval(this._autoRefreshId); this._autoRefreshId = null; }
+  },
+
+  init() {
+    this.startAutoRefresh();
+  }
+};
+
 /* ─── Projects + Summary ─── */
 function preferredProjectId() {
   const v = el('project').value;
@@ -1436,6 +1601,7 @@ const Theme = {
   TabManager.init();
   RunsView.init();
   DocsView.init();
+  QuestionsView.init();
 
   await safeRefresh(async () => {
     await loadProjects();
@@ -1524,10 +1690,13 @@ const Theme = {
     DocsView.path = '';
     TabManager.dagLoaded = false;
     TabManager.docsLoaded = false;
+    TabManager.questionsLoaded = false;
+    QuestionsView._loaded = false;
     await safeRefresh(async () => {
       await Promise.all([loadSummary(), RunsView.load()]);
       if (TabManager.active === 'dag') { TabManager.dagLoaded = true; DagView.load(); }
       if (TabManager.active === 'docs') { TabManager.docsLoaded = true; DocsView.load(true); }
+      if (TabManager.active === 'questions') { TabManager.questionsLoaded = true; QuestionsView.load(); }
       el('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
     });
   });

@@ -155,6 +155,49 @@ When the READ agent detects that a research question requires infrastructure wor
 
 **Tower scope:** Research can change hyperparameters, algorithms, experiment scripts, and configs. Anything that could break other experiments if done wrong (shared env code, interfaces, dependencies) requires a handoff.
 
+### Cross-Kit Subprocess Launching (Optional)
+
+Research can optionally request work from other kits (TDD, Math) via the interop queue. Use this instead of (or alongside) the handoff mechanism when you want automated execution rather than a manual pause.
+
+**When to use:**
+- Need TDD to build or fix infrastructure code (new modules, bug fixes, dependency upgrades)
+- Need Math to formalize or verify a mathematical construction referenced by your research
+- Need a status check from another kit before deciding the next experiment
+
+**How to create a request:**
+
+```bash
+tools/kit request \
+  --from research --from-phase <current_phase> \
+  --to tdd --action tdd.full \
+  --run-id <current_run_id> \
+  --arg "docs/fix-env-interface.md" \
+  --must-read "LAST_TOUCH.md" \
+  --reasoning "Research blocked: env.step() returns wrong shape, need TDD fix" \
+  --json
+```
+
+**How to execute it:**
+
+```bash
+tools/pump --once --request <request_id> --json
+```
+
+The response lands in `interop/responses/<request_id>.json` with status `ok|blocked|failed`, child run pointers, and deliverables.
+
+**Available cross-kit actions:**
+- `tdd.red`, `tdd.green`, `tdd.refactor`, `tdd.ship`, `tdd.full` — TDD phases
+- `math.survey`, `math.specify`, `math.construct`, `math.formalize`, `math.prove`, `math.full`, `math.status` — Math phases
+- `research.status` — status check from another kit back to research
+
+**Key parameters:**
+- `--must-read`: Files the child agent MUST read for context
+- `--allowed-path`: Glob patterns restricting what the child can read (isolation)
+- `--deliverable`: Expected output globs (e.g., `"src/env/*.py"`)
+- `--reasoning`: 1-3 sentence justification (appears in the DAG and audit trail)
+
+**Cross-kit vs. handoff:** Use cross-kit requests for well-scoped, automatable tasks (e.g., "run TDD full on this spec"). Use the handoff mechanism when the work is ambiguous and needs human or orchestrator judgment.
+
 ### Critical Rules
 
 - **You are the orchestrator, not the implementor.** Steps 1-4 MUST use `./experiment.sh` commands.

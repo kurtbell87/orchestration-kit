@@ -1,6 +1,7 @@
 """All API payload builders."""
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import filecmp
 import json
@@ -142,7 +143,7 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
 
     # Sort validation
     sort_raw = query.get("sort") or "-started_at"
-    allowed_sort_cols = {"started_at", "status", "kit", "phase", "run_id"}
+    allowed_sort_cols = {"started_at", "status", "kit", "phase", "run_id", "experiment_name"}
     desc = sort_raw.startswith("-")
     sort_col = sort_raw.lstrip("-")
     if sort_col not in allowed_sort_cols:
@@ -192,7 +193,9 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
           manifest_path,
           log_path,
           events_path,
-          reasoning
+          reasoning,
+          experiment_name,
+          verdict
         FROM runs
         {where}
         ORDER BY COALESCE({sort_col}, '') {order_dir}, run_id DESC
@@ -378,7 +381,20 @@ def _kind_for_artifact(path: Path) -> str:
         return "jsonl"
     if suffix in {".log", ".txt"}:
         return "text"
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".svg"}:
+        return "image"
+    if suffix == ".csv":
+        return "csv"
     return "text"
+
+
+_IMAGE_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+}
 
 
 def artifact_payload(
@@ -395,13 +411,33 @@ def artifact_payload(
 
     root, resolved = _resolve_artifact_path(project_id=project_id, raw_path=raw_path, scope=scope)
     size = resolved.stat().st_size
+    kind = _kind_for_artifact(resolved)
+
+    # Image: binary read + base64
+    if kind == "image":
+        image_max = min(5 * 1024 * 1024, max_bytes)
+        to_read = min(size, image_max)
+        with resolved.open("rb") as fh:
+            raw = fh.read(to_read)
+        rel_path = str(resolved.relative_to(root))
+        mime = _IMAGE_MIME.get(resolved.suffix.lower(), "application/octet-stream")
+        return {
+            "project_id": project_id,
+            "path": rel_path,
+            "kind": "image",
+            "mime": mime,
+            "data_base64": base64.b64encode(raw).decode("ascii"),
+            "bytes_total": size,
+            "bytes_read": to_read,
+            "truncated": size > to_read,
+        }
+
     to_read = min(size, max_bytes)
     with resolved.open("rb") as fh:
         raw = fh.read(to_read)
     text = raw.decode("utf-8", errors="replace")
     truncated = size > to_read
 
-    kind = _kind_for_artifact(resolved)
     if kind in {"json", "jsonl"}:
         if resolved.suffix.lower() == ".jsonl":
             rows: list[str] = []
@@ -582,5 +618,31 @@ def capsule_preview_payload(project_id: str, run_id: str) -> dict[str, Any]:
         "log": run.get("log_path"),
         "events": run.get("events_path"),
     }
+
+    # Extract result artifacts from manifest's artifact_index.tracked[]
+    result_artifacts: list[dict[str, Any]] = []
+    manifest_path = run.get("manifest_path")
+    if manifest_path:
+        try:
+            manifest_payload = artifact_payload(project_id=project_id, raw_path=manifest_path, max_bytes=120000)
+            manifest_text = manifest_payload.get("text", "")
+            manifest_data = json.loads(manifest_text) if manifest_text else {}
+            ai = manifest_data.get("artifact_index")
+            if isinstance(ai, dict):
+                tracked = ai.get("tracked")
+                if isinstance(tracked, list):
+                    for art in tracked:
+                        if not isinstance(art, dict):
+                            continue
+                        art_path = art.get("path", "")
+                        if isinstance(art_path, str) and "/results/" in art_path:
+                            result_artifacts.append({
+                                "path": art_path,
+                                "size": art.get("size"),
+                                "kind": art.get("kind"),
+                            })
+        except Exception:
+            pass
+    result["result_artifacts"] = result_artifacts
 
     return result

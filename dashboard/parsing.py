@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,50 @@ def parse_manifest_metadata(orchestration_kit_root: Path, manifest_path: str | N
     return metadata
 
 
+def parse_manifest_full(orchestration_kit_root: Path, manifest_path: str | None) -> dict[str, Any]:
+    resolved = resolve_pointer(orchestration_kit_root, manifest_path)
+    if resolved is None or not resolved.is_file():
+        return {}
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _extract_experiment_name(metadata: dict[str, Any]) -> str | None:
+    command = metadata.get("command")
+    if not isinstance(command, list) or not command:
+        return None
+    last_arg = str(command[-1])
+    return Path(last_arg).stem or None
+
+
+_VERDICT_RE = re.compile(r"##\s*Verdict:\s*(CONFIRMED|REFUTED|INCONCLUSIVE)", re.IGNORECASE)
+
+
+def _extract_verdict(project_root: Path, tracked_artifacts: list[dict[str, Any]]) -> str | None:
+    for art in tracked_artifacts:
+        art_path = art.get("path", "")
+        if not isinstance(art_path, str):
+            continue
+        if "/results/" not in art_path or not art_path.endswith("/analysis.md"):
+            continue
+        full = project_root / art_path
+        if not full.is_file():
+            continue
+        try:
+            text = full.read_bytes()[:5120].decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        m = _VERDICT_RE.search(text)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
 def parse_run(
     *,
     project: dict[str, Any],
@@ -79,6 +124,8 @@ def parse_run(
         "host": None,
         "pid": None,
         "reasoning": None,
+        "experiment_name": None,
+        "verdict": None,
     }
 
     requests: dict[str, dict[str, Any]] = {}
@@ -208,7 +255,8 @@ def parse_run(
         if logs:
             run["log_path"] = rel_to(project["orchestration_kit_root_path"], logs[0])
 
-    metadata = parse_manifest_metadata(project["orchestration_kit_root_path"], run["manifest_path"])
+    manifest_full = parse_manifest_full(project["orchestration_kit_root_path"], run["manifest_path"])
+    metadata = manifest_full.get("metadata") if isinstance(manifest_full.get("metadata"), dict) else {}
     if metadata:
         if run["parent_run_id"] is None and isinstance(metadata.get("parent_run_id"), str):
             run["parent_run_id"] = metadata["parent_run_id"]
@@ -236,6 +284,22 @@ def parse_run(
             run["pid"] = metadata["pid"]
         if run["reasoning"] is None and isinstance(metadata.get("reasoning"), str):
             run["reasoning"] = metadata["reasoning"]
+
+    # Extract experiment_name from command[]
+    if metadata:
+        exp_name = _extract_experiment_name(metadata)
+        if exp_name:
+            run["experiment_name"] = exp_name
+
+    # Extract verdict from analysis.md in result artifacts
+    artifact_index = manifest_full.get("artifact_index")
+    if isinstance(artifact_index, dict):
+        tracked = artifact_index.get("tracked")
+        if isinstance(tracked, list):
+            project_root_path = project.get("project_root_path") or Path(project["project_root"])
+            verdict = _extract_verdict(project_root_path, tracked)
+            if verdict:
+                run["verdict"] = verdict
 
     if run["finished_at"] is None:
         run["status"] = "running"

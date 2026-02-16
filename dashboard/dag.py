@@ -14,11 +14,11 @@ from .config import db_path
 from .schema import ensure_schema
 
 
-# Layout constants
+# Layout constants — top-to-bottom orientation
 NODE_W = 180
 NODE_H = 44
-LAYER_GAP_X = 240
-NODE_GAP_Y = 60
+LAYER_GAP_Y = 80       # vertical gap between layers (rows)
+NODE_GAP_X = 220        # horizontal gap between sibling nodes in same layer
 PAD_X = 40
 PAD_Y = 40
 
@@ -30,7 +30,7 @@ def _load_runs_and_requests(project_id: str | None) -> tuple[list[dict[str, Any]
 
     if project_id:
         runs = conn.execute(
-            "SELECT run_id, parent_run_id, kit, phase, status, started_at, reasoning FROM runs WHERE project_id = ?",
+            "SELECT run_id, parent_run_id, kit, phase, status, started_at, reasoning, experiment_name FROM runs WHERE project_id = ?",
             (project_id,),
         ).fetchall()
         reqs = conn.execute(
@@ -40,7 +40,7 @@ def _load_runs_and_requests(project_id: str | None) -> tuple[list[dict[str, Any]
         ).fetchall()
     else:
         runs = conn.execute(
-            "SELECT run_id, parent_run_id, kit, phase, status, started_at, reasoning FROM runs"
+            "SELECT run_id, parent_run_id, kit, phase, status, started_at, reasoning, experiment_name FROM runs"
         ).fetchall()
         reqs = conn.execute(
             "SELECT parent_run_id, child_run_id, from_kit, from_phase, to_kit, to_phase, status, reasoning FROM requests"
@@ -65,6 +65,7 @@ def _build_adjacency(
             "status": r.get("status") or "unknown",
             "started_at": r.get("started_at") or "",
             "reasoning": r.get("reasoning") or "",
+            "experiment_name": r.get("experiment_name") or "",
         }
 
     children: dict[str, list[str]] = defaultdict(list)
@@ -109,6 +110,25 @@ def _build_adjacency(
             if curr_id not in has_explicit_parent and (prev_id, curr_id, "parent") not in edges:
                 children[prev_id].append(curr_id)
                 edges.add((prev_id, curr_id, "inferred"))
+
+    # Experiment lineage: connect runs sharing the same experiment_name chronologically
+    by_experiment: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in runs:
+        exp = r.get("experiment_name") or ""
+        started = r.get("started_at") or ""
+        if exp and started:
+            by_experiment[exp].append(r)
+
+    for exp, exp_runs in by_experiment.items():
+        exp_runs.sort(key=lambda x: (x.get("started_at") or "", str(x.get("run_id") or "")))
+        for i in range(1, len(exp_runs)):
+            prev_id = str(exp_runs[i - 1]["run_id"])
+            curr_id = str(exp_runs[i]["run_id"])
+            # Skip if any edge already exists between these nodes
+            if any((prev_id, curr_id, t) in edges for t in ("parent", "interop", "inferred", "experiment")):
+                continue
+            children[prev_id].append(curr_id)
+            edges.add((prev_id, curr_id, "experiment"))
 
     return nodes, children, edges
 
@@ -216,15 +236,16 @@ def dag_payload(project_id: str | None) -> dict[str, Any]:
     layers_map = _topo_layers(nodes, children)
     ordered_layers = _barycenter_order(layers_map, children, nodes)
 
-    # Assign coordinates
+    # Assign coordinates — top-to-bottom layout
+    # Layers are rows (y increases), siblings spread horizontally (x increases)
     positions: dict[str, tuple[float, float]] = {}
     max_x = 0.0
     max_y = 0.0
 
     for lyr_idx, node_ids in sorted(ordered_layers.items()):
-        x = PAD_X + lyr_idx * LAYER_GAP_X
+        y = PAD_Y + lyr_idx * LAYER_GAP_Y
         for slot, nid in enumerate(node_ids):
-            y = PAD_Y + slot * NODE_GAP_Y
+            x = PAD_X + slot * NODE_GAP_X
             positions[nid] = (x, y)
             max_x = max(max_x, x + NODE_W)
             max_y = max(max_y, y + NODE_H)
@@ -240,6 +261,7 @@ def dag_payload(project_id: str | None) -> dict[str, Any]:
             "phase": info["phase"],
             "reasoning": info.get("reasoning") or "",
             "started_at": info.get("started_at") or "",
+            "experiment_name": info.get("experiment_name") or "",
             "x": x,
             "y": y,
             "width": NODE_W,
