@@ -333,6 +333,25 @@
       background: rgba(2, 6, 23, 0.7);
     }
     .markdown pre code { border: 0; padding: 0; background: transparent; }
+    .markdown table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 0.5em 0;
+      font-size: 12px;
+    }
+    .markdown th, .markdown td {
+      border: 1px solid var(--line);
+      padding: 6px 10px;
+      text-align: left;
+    }
+    .markdown th {
+      background: rgba(30, 41, 59, 0.6);
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .markdown tbody tr:hover {
+      background: rgba(30, 41, 59, 0.3);
+    }
 
     /* Utilities */
     .mono { font-family: var(--mono); font-size: 11px; word-break: break-all; }
@@ -538,6 +557,7 @@ function renderMarkdown(md) {
   const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
   const html = [];
   let inCode = false, codeLang = '', codeLines = [], inUl = false, inOl = false;
+  let tableLines = [];
   const closeLists = () => {
     if (inUl) { html.push('</ul>'); inUl = false; }
     if (inOl) { html.push('</ol>'); inOl = false; }
@@ -547,14 +567,59 @@ function renderMarkdown(md) {
     html.push('<pre><code'+cls+'>'+escapeHtml(codeLines.join('\n'))+'</code></pre>');
     codeLines = []; codeLang = '';
   };
+  const parsePipeCells = (line) => {
+    let t = line.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split('|');
+  };
+  const flushTable = () => {
+    if (tableLines.length < 2 || !/^\s*\|[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$/.test(tableLines[1])) {
+      for (const tl of tableLines) html.push('<p>'+inlineMarkdown(tl)+'</p>');
+      tableLines = [];
+      return;
+    }
+    const sepCells = parsePipeCells(tableLines[1]);
+    const aligns = sepCells.map(c => {
+      const s = c.trim();
+      if (s.startsWith(':') && s.endsWith(':')) return 'center';
+      if (s.endsWith(':')) return 'right';
+      return 'left';
+    });
+    html.push('<table><thead><tr>');
+    const hCells = parsePipeCells(tableLines[0]);
+    for (let i = 0; i < hCells.length; i++) {
+      const a = aligns[i] || 'left';
+      html.push('<th'+(a!=='left'?' style="text-align:'+a+'"':'')+'>'+inlineMarkdown(hCells[i].trim())+'</th>');
+    }
+    html.push('</tr></thead><tbody>');
+    for (let r = 2; r < tableLines.length; r++) {
+      const cells = parsePipeCells(tableLines[r]);
+      html.push('<tr>');
+      for (let i = 0; i < cells.length; i++) {
+        const a = aligns[i] || 'left';
+        html.push('<td'+(a!=='left'?' style="text-align:'+a+'"':'')+'>'+inlineMarkdown(cells[i].trim())+'</td>');
+      }
+      html.push('</tr>');
+    }
+    html.push('</tbody></table>');
+    tableLines = [];
+  };
   for (const line of lines) {
     const fence = line.match(/^```([A-Za-z0-9_-]+)?\s*$/);
     if (fence) {
+      if (tableLines.length) flushTable();
       if (inCode) { flushCode(); inCode = false; }
       else { closeLists(); inCode = true; codeLang = fence[1] || ''; codeLines = []; }
       continue;
     }
     if (inCode) { codeLines.push(line); continue; }
+    if (/^\s*\|/.test(line)) {
+      closeLists();
+      tableLines.push(line);
+      continue;
+    }
+    if (tableLines.length) flushTable();
     if (!line.trim()) { closeLists(); continue; }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) { closeLists(); html.push('<h'+heading[1].length+'>'+inlineMarkdown(heading[2])+'</h'+heading[1].length+'>'); continue; }
@@ -565,6 +630,7 @@ function renderMarkdown(md) {
     closeLists();
     html.push('<p>'+inlineMarkdown(line)+'</p>');
   }
+  if (tableLines.length) flushTable();
   if (inCode) flushCode();
   closeLists();
   return html.join('\n') || '<p class="muted">(empty)</p>';
@@ -625,8 +691,8 @@ function renderDag(data) {
     const x1 = src.x + src.width, y1 = src.y + src.height / 2;
     const x2 = tgt.x, y2 = tgt.y + tgt.height / 2;
     const cx1 = x1 + (x2 - x1) * 0.4, cx2 = x2 - (x2 - x1) * 0.4;
-    const stroke = e.type === 'interop' ? '#0ea5e9' : '#475569';
-    const dash = e.type === 'interop' ? ' stroke-dasharray="6 3"' : '';
+    const stroke = e.type === 'interop' ? '#0ea5e9' : e.type === 'inferred' ? '#6366f1' : '#475569';
+    const dash = e.type === 'interop' ? ' stroke-dasharray="6 3"' : e.type === 'inferred' ? ' stroke-dasharray="4 4"' : '';
     svg += '<path d="M '+x1+' '+y1+' C '+cx1+' '+y1+', '+cx2+' '+y2+', '+x2+' '+y2+'" fill="none" stroke="'+stroke+'" stroke-width="1.5"'+dash+' marker-end="url(#arrow)"/>';
   }
 
@@ -1170,6 +1236,24 @@ async function safeRefresh(fn) {
       _prevRunning = running;
     } catch (_) {}
   }, 5000);
+
+  // Auto-reindex: periodically POST /api/refresh so stale "running" entries get updated
+  let _lastReindex = Date.now();
+  setInterval(async () => {
+    try {
+      const pid = el('project').value;
+      await api('/api/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pid ? { project_id: pid } : {}),
+      });
+      await Promise.all([loadSummary(), RunsView.load()]);
+      if (TabManager.active === 'dag' && TabManager.dagLoaded) DagView.load();
+      if (TabManager.active === 'docs' && TabManager.docsLoaded) DocsView.load();
+      el('stamp').textContent = 'reindexed ' + new Date().toLocaleTimeString();
+      _lastReindex = Date.now();
+    } catch (_) {}
+  }, 30000);
 
   // Header event listeners
   el('refresh-index').addEventListener('click', async () => {

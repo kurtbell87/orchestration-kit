@@ -70,12 +70,16 @@ def _build_adjacency(
     children: dict[str, list[str]] = defaultdict(list)
     edges: set[tuple[str, str, str]] = set()  # (source, target, type)
 
+    # Track which nodes already have explicit parent edges
+    has_explicit_parent: set[str] = set()
+
     for r in runs:
         rid = str(r["run_id"])
         parent = r.get("parent_run_id")
         if isinstance(parent, str) and parent in nodes:
             children[parent].append(rid)
             edges.add((parent, rid, "parent"))
+            has_explicit_parent.add(rid)
 
     for req in requests:
         p = req.get("parent_run_id")
@@ -83,6 +87,28 @@ def _build_adjacency(
         if isinstance(p, str) and isinstance(c, str) and p in nodes and c in nodes:
             children[p].append(c)
             edges.add((p, c, "interop"))
+            has_explicit_parent.add(c)
+
+    # Infer sequential edges from timestamps within the same kit.
+    # Group runs by kit, sort by started_at, and connect consecutive phases
+    # for runs that have no explicit parent linkage.
+    by_kit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in runs:
+        kit = r.get("kit") or "?"
+        started = r.get("started_at") or ""
+        if started:
+            by_kit[kit].append(r)
+
+    for kit, kit_runs in by_kit.items():
+        kit_runs.sort(key=lambda x: (x.get("started_at") or "", str(x.get("run_id") or "")))
+        for i in range(1, len(kit_runs)):
+            prev_id = str(kit_runs[i - 1]["run_id"])
+            curr_id = str(kit_runs[i]["run_id"])
+            # Only infer edge if current node has no explicit parent and
+            # the edge doesn't already exist
+            if curr_id not in has_explicit_parent and (prev_id, curr_id, "parent") not in edges:
+                children[prev_id].append(curr_id)
+                edges.add((prev_id, curr_id, "inferred"))
 
     return nodes, children, edges
 
