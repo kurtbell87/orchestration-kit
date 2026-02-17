@@ -58,6 +58,34 @@ tools/pump --once --request <request_id> --json
 Responses land in `interop/responses/<request_id>.json`.
 `--from-phase` is optional; if omitted, `tools/pump` infers it from the parent run metadata/events.
 
+### Research → TDD Sub-Cycle (Common Pattern)
+
+When a research phase discovers it needs **new code** (a tool, library, or test harness), it must not write code inline. Instead, spawn a TDD sub-cycle:
+
+1. **Write a spec** in the project's TDD spec directory (e.g., `.kit/docs/<feature>.md`)
+2. **Run TDD phases in background**, checking only exit codes:
+   ```bash
+   # All phases run in background — do NOT tail logs or read output
+   .kit/tdd.sh red   .kit/docs/<feature>.md   # Sub-agent writes failing tests
+   .kit/tdd.sh green                           # Sub-agent implements
+   .kit/tdd.sh refactor                        # Sub-agent cleans up
+   .kit/tdd.sh ship  .kit/docs/<feature>.md    # Sub-agent commits + PR
+   ```
+3. **Resume the research phase** once the TDD sub-cycle exits 0. The new code is now available as tested infrastructure.
+
+**Key discipline**: The orchestrator never reads implementation files, test files, or build output from the TDD sub-cycle. Trust exit codes. The TDD sub-agents handle their own verification. This prevents context bloat in the orchestrator's window.
+
+**When to trigger Research→TDD**:
+- Research phase needs a data extraction tool (e.g., oracle expectancy from real data)
+- Research phase needs a new analysis library or utility
+- Research phase needs modifications to existing infrastructure (new fields, new APIs)
+- Any code change that should be regression-tested
+
+**When NOT to trigger** (stay in research kit):
+- Python analysis scripts that are experiment-specific and disposable
+- Configuration files or parameter sweeps
+- Pure data analysis with no new C++/production code
+
 ## Global Dashboard (Optional)
 
 ```bash

@@ -1,9 +1,12 @@
-## Current State (updated YYYY-MM-DD)
+## Current State (updated 2026-02-16)
 
-- **Build:** _e.g., `build/` is current. 42 tests pass._
-- **Dependencies:** _e.g., All installed in venv/node_modules._
-- **Next task:** _e.g., Step 2 -- implement user authentication._
-- **Key entry point:** _e.g., `npm run dev` or `pytest tests/`_
+- **Build:** `build/` is current. 204/205 unit tests pass (1 disabled). 14 integration tests excluded via `--label-exclude integration`.
+- **Dependencies:** All via CMake FetchContent (databento-cpp, libtorch, xgboost, GTest).
+- **Phases 1-6 DONE:** book_builder, feature_encoder, oracle_labeler, trajectory_builder, MLP, GBT, CNN — full TDD cycles complete.
+- **Phase 7 (integration-overfit):** Red + green exit 0. Refactor NOT yet done.
+- **Phase 8 SKIPPED:** SSM model requires CUDA + Python. No GPU available.
+- **Next task:** Run refactor for integration-overfit → breadcrumbs → ship.
+- **Key entry point:** `cmake --build build -j12 && cd build && ctest --output-on-failure --label-exclude integration`
 
 ## Don't
 
