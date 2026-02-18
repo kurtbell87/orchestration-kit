@@ -90,12 +90,23 @@ class AWSBackend(ComputeBackend):
         return instance_id
 
     def wait_ready(self, instance_id: str, timeout: int = 600) -> None:
-        """Wait until the EC2 instance passes status checks."""
+        """Wait until the EC2 instance passes status checks.
+
+        If the instance self-terminates before checks pass (fast experiments),
+        this returns normally — the caller should proceed to poll S3 for results.
+        """
         waiter = self._ec2.get_waiter("instance_status_ok")
-        waiter.wait(
-            InstanceIds=[instance_id],
-            WaiterConfig={"Delay": 15, "MaxAttempts": timeout // 15},
-        )
+        try:
+            waiter.wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={"Delay": 15, "MaxAttempts": timeout // 15},
+            )
+        except Exception:
+            # Instance may have already terminated (fast experiment).
+            state = self.status(instance_id)
+            if state in ("terminated", "shutting-down", "stopped"):
+                return  # Instance finished — proceed to result retrieval
+            raise
 
     def status(self, instance_id: str) -> str:
         """Return EC2 instance state name."""
@@ -180,9 +191,28 @@ class AWSBackend(ComputeBackend):
     # -----------------------------------------------------------------------
 
     def _get_latest_ami(self) -> str:
-        """Get latest Amazon Linux 2023 x86_64 AMI via SSM."""
-        resp = self._ssm.get_parameter(Name=AL2023_SSM_PARAM)
-        return resp["Parameter"]["Value"]
+        """Get latest Amazon Linux 2023 x86_64 AMI.
+
+        Tries SSM parameter first, falls back to ec2:DescribeImages.
+        """
+        try:
+            resp = self._ssm.get_parameter(Name=AL2023_SSM_PARAM)
+            return resp["Parameter"]["Value"]
+        except Exception:
+            pass
+
+        # Fallback: query EC2 directly
+        resp = self._ec2.describe_images(
+            Owners=["amazon"],
+            Filters=[
+                {"Name": "name", "Values": ["al2023-ami-2023*-kernel-*-x86_64"]},
+                {"Name": "state", "Values": ["available"]},
+            ],
+        )
+        images = sorted(resp["Images"], key=lambda i: i["CreationDate"])
+        if not images:
+            raise RuntimeError("No AL2023 AMI found via DescribeImages")
+        return images[-1]["ImageId"]
 
     def _ensure_security_group(self, run_id: str) -> str:
         """Create a security group for this run (SSH + all egress)."""
@@ -246,6 +276,18 @@ class AWSBackend(ComputeBackend):
             f'export EXPERIMENT_COMMAND="{config.command}"',
             f'export MAX_HOURS="{config.max_hours}"',
         ])
+
+        # Forward local AWS credentials so the instance can access S3.
+        # This is needed when no IAM instance profile is attached.
+        import boto3 as _boto3
+        _session = _boto3.Session()
+        _creds = _session.get_credentials()
+        if _creds:
+            _frozen = _creds.get_frozen_credentials()
+            var_block += f'\nexport AWS_ACCESS_KEY_ID="{_frozen.access_key}"'
+            var_block += f'\nexport AWS_SECRET_ACCESS_KEY="{_frozen.secret_key}"'
+            if _frozen.token:
+                var_block += f'\nexport AWS_SESSION_TOKEN="{_frozen.token}"'
 
         # Add any extra env vars
         for k, v in config.env_vars.items():

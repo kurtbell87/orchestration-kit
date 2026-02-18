@@ -151,10 +151,11 @@ def run(
 
     except Exception as e:
         _update_state(run_id, status="error", error=str(e))
-        # Attempt cleanup
-        if state.get("instance_id"):
+        # Attempt cleanup — use _load_state to get the persisted instance_id
+        saved = _load_state(run_id)
+        if saved.get("instance_id"):
             try:
-                backend.terminate(state["instance_id"])
+                backend.terminate(saved["instance_id"])
             except Exception:
                 pass
         raise
