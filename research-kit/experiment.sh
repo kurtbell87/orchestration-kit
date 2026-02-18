@@ -472,6 +472,34 @@ run_run() {
   cp "$spec_file" "$results_path/spec.md"
   chmod 444 "$results_path/spec.md"
 
+  # Pre-flight compute advisory: inform the agent if this should run on cloud
+  local compute_advisory=""
+  local _okit="${ORCHESTRATION_KIT_ROOT:-}"
+  if [[ -n "$_okit" ]] && command -v python3 &>/dev/null; then
+    local _pf_out
+    _pf_out=$(python3 "$_okit/tools/cloud/preflight.py" "$spec_file" --json 2>/dev/null || true)
+    if [[ -n "$_pf_out" ]]; then
+      local _rec
+      _rec=$(echo "$_pf_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('recommendation',''))" 2>/dev/null || true)
+      if [[ "$_rec" == "remote" ]]; then
+        local _reason
+        _reason=$(echo "$_pf_out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+parts = [d.get('backend','').upper(), d.get('instance_type','')]
+if d.get('estimated_total_cost'): parts.append('est. ' + d['estimated_total_cost'])
+print(' '.join(p for p in parts if p) + '. ' + d.get('reason',''))
+" 2>/dev/null || true)
+        compute_advisory="
+## Compute Advisory
+This experiment exceeds local compute thresholds. ${_reason}
+For the full protocol, offload heavy computation to cloud:
+  tools/cloud-run run \"<command>\" --spec $spec_file --data-dirs <data-dir>
+Run the MVE locally first, then use cloud-run for the full experiment."
+      fi
+    fi
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
@@ -488,7 +516,7 @@ run_run() {
 - Test command (unit tests): $TEST_CMD
 - Max GPU hours: $MAX_GPU_HOURS
 - Max runs: $MAX_RUNS
-
+${compute_advisory}
 Read the experiment spec first. Implement and execute the experiment. Write ALL metrics to $results_path/metrics.json." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
     -p "Read the experiment spec, implement, and execute. Write all metrics to $results_path/metrics.json" \

@@ -83,6 +83,38 @@ If an abort criterion is triggered:
 
 **IMPORTANT: Time-based abort thresholds.** If a spec's per-run time abort threshold is clearly unrealistic for the actual data size (e.g., "abort if fit takes >60s" but the dataset is much larger than the spec assumed), **ignore that specific abort criterion** and note the discrepancy in `metrics.json` notes. Killing and restarting due to unrealistic time estimates wastes far more time than letting the run finish. Apply total wall-clock budgets loosely — complete the current phase and report partial results rather than hard-killing mid-run.
 
+## Cloud Execution for Heavy Workloads
+
+If a **Compute Advisory** appears in the Context section, the experiment's compute profile exceeds local machine thresholds. Use cloud execution for the full protocol:
+
+1. **Implement and test locally first.** Write the experiment code, run sanity checks, reproduce baseline on a small subset.
+2. **Run the MVE locally** if it's quick enough (minutes, not hours).
+3. **Offload the full protocol to cloud** using `tools/cloud-run`:
+
+```bash
+tools/cloud-run run "python scripts/run_experiment.py --full" \
+    --spec experiments/exp-NNN-name.md \
+    --data-dirs data/ \
+    --output-dir results/exp-NNN-name/ \
+    --detach
+```
+
+4. **Check status and pull results** when done:
+```bash
+tools/cloud-run status <run-id>
+tools/cloud-run pull <run-id> --output-dir results/exp-NNN-name/
+```
+
+The remote instance runs your command in a Docker container with Python 3.11. Dependencies from `requirements.txt` are installed automatically. Results are synced back via S3.
+
+**Key flags:**
+- `--detach`: Launch and return immediately (for long runs)
+- `--data-dirs`: Comma-separated local dirs to upload alongside code
+- `--max-hours N`: Auto-terminate safety (default: 12h)
+- `--output-dir`: Where to download results locally
+
+If no Compute Advisory is present, run everything locally as normal.
+
 ## What NOT To Do
 - Do NOT add metrics that aren't in the spec. If you discover something interesting, note it in `metrics.json` `notes` field, but it does not become a metric.
 - Do NOT skip seeds or runs defined in the protocol.

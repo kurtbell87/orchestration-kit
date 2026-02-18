@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Pre-flight compute check — recommend local vs cloud execution for an experiment spec."""
+
+import sys
+from pathlib import Path
+
+# Add tools/ to path so we can import cloud module
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from cloud.preflight import main
+
+main()

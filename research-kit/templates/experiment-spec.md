@@ -53,6 +53,22 @@ Estimate wall time from actual data size before committing. -->
 - Max training runs: _N_
 - Max seeds per configuration: _N_
 
+### Compute Profile
+<!-- Parsed by tools/preflight to recommend local vs cloud execution.
+     Fill in what you know; leave unknowns as 0 or "none".
+     compute_type: cpu (XGBoost, sklearn, polars) or gpu (PyTorch, CUDA workloads)
+     estimated_wall_hours: rough estimate based on data size and fit count -->
+```yaml
+compute_type: cpu
+estimated_rows: 0
+model_type: other
+sequential_fits: 0
+parallelizable: false
+memory_gb: 0
+gpu_type: none
+estimated_wall_hours: 0
+```
+
 ## Abort Criteria
 <!-- When to stop early. Per-run time thresholds must use 3-5x expected
 time based on actual data size. Unrealistically tight time aborts cause

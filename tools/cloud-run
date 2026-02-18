@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""cloud-run — Remote experiment execution for orchestration-kit.
+
+Usage:
+  tools/cloud-run <command> --spec <spec-file> [options]    # Run experiment remotely
+  tools/cloud-run status [run-id]                           # Check run status
+  tools/cloud-run pull <run-id> [--output-dir <dir>]        # Download results
+  tools/cloud-run ls                                        # List tracked runs
+  tools/cloud-run gc                                        # Clean up orphaned resources
+  tools/cloud-run terminate <run-id>                        # Force-terminate a run
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Add tools/ to path so we can import cloud module
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from cloud import remote, s3
+from cloud.config import DEFAULT_MAX_HOURS
+from cloud.preflight import check_spec
+
+
+def cmd_run(args):
+    """Execute an experiment on a remote cloud instance."""
+    spec_file = args.spec
+    command = args.command
+
+    # Run preflight to determine backend and instance type (unless overridden)
+    backend_name = args.backend
+    instance_type = args.instance_type
+    use_spot = not args.on_demand
+
+    if spec_file and (not backend_name or not instance_type):
+        pf = check_spec(spec_file)
+        if not backend_name:
+            if pf["recommendation"] == "local":
+                print(f"Preflight says local execution is sufficient: {pf['reason']}")
+                if not args.force:
+                    print("Use --force to run remotely anyway.")
+                    sys.exit(0)
+                backend_name = "aws"
+            else:
+                backend_name = pf["backend"]
+        if not instance_type:
+            instance_type = pf.get("instance_type", "c7a.8xlarge")
+        if "use_spot" in pf:
+            use_spot = pf["use_spot"] and not args.on_demand
+
+    # Defaults if still not set
+    backend_name = backend_name or "aws"
+    instance_type = instance_type or "c7a.8xlarge"
+
+    # Resolve project root
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+
+    # Parse data dirs
+    data_dirs = args.data_dirs.split(",") if args.data_dirs else None
+
+    # Parse env vars
+    env_vars = {}
+    if args.env:
+        for e in args.env:
+            k, _, v = e.partition("=")
+            env_vars[k] = v
+
+    # Instantiate backend (deferred for dry-run — no SDK needed)
+    backend = None if args.dry_run else _get_backend(backend_name)
+
+    result = remote.run(
+        command=command,
+        backend=backend,
+        backend_name=backend_name,
+        project_root=project_root,
+        spec_file=spec_file,
+        instance_type=instance_type,
+        data_dirs=data_dirs,
+        sync_back=args.sync_back,
+        local_results_dir=args.output_dir,
+        use_spot=use_spot,
+        max_hours=args.max_hours,
+        detach=args.detach,
+        dry_run=args.dry_run,
+        env_vars=env_vars,
+    )
+
+    if args.json_output:
+        print(json.dumps(result, indent=2))
+    elif args.dry_run:
+        print(f"\n[DRY RUN] Would execute on {backend_name} {instance_type}:")
+        print(f"  Command:  {command}")
+        print(f"  Data:     {data_dirs}")
+        print(f"  Max hours: {args.max_hours}")
+        print(f"  Spot:     {use_spot}")
+        print(f"  Run ID:   {result['run_id']}")
+    elif not args.detach:
+        ec = result.get("exit_code", "?")
+        status = result.get("status", "unknown")
+        elapsed = result.get("elapsed_seconds", 0)
+        print(f"\nDone. Status: {status}, exit code: {ec}, elapsed: {elapsed//60}m{elapsed%60}s")
+        if result.get("local_results_dir"):
+            print(f"Results: {result['local_results_dir']}")
+
+
+def cmd_status(args):
+    """Check the status of a cloud run."""
+    if args.run_id:
+        result = remote.poll_status(args.run_id)
+        _print_run(result)
+    else:
+        # Show status of most recent run
+        runs = remote.list_runs()
+        if not runs:
+            print("No tracked runs.")
+            return
+        result = remote.poll_status(runs[0]["run_id"])
+        _print_run(result)
+
+
+def cmd_pull(args):
+    """Download results from a completed run."""
+    local_dir = remote.pull_results(args.run_id, args.output_dir)
+    print(f"Results downloaded to: {local_dir}")
+
+
+def cmd_ls(args):
+    """List all tracked cloud runs."""
+    runs = remote.list_runs()
+    if not runs:
+        print("No tracked runs.")
+        return
+
+    # Refresh status of running ones
+    for r in runs:
+        if r["status"] in ("running", "provisioning"):
+            r = remote.poll_status(r["run_id"])
+
+    fmt = "{:<36}  {:<12}  {:<6}  {:<12}  {:<8}  {}"
+    print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "HOURS", "COMMAND"))
+    print("-" * 100)
+    for r in runs:
+        ec = str(r.get("exit_code", "-"))
+        hrs = ""
+        if r.get("elapsed_seconds"):
+            hrs = f"{r['elapsed_seconds']/3600:.1f}"
+        cmd = (r.get("command", "")[:40] + "...") if len(r.get("command", "")) > 40 else r.get("command", "")
+        print(fmt.format(
+            r["run_id"], r.get("backend", "?"), ec,
+            r.get("status", "?"), hrs, cmd,
+        ))
+
+
+def cmd_gc(args):
+    """Garbage-collect orphaned cloud resources."""
+    for backend_name in ("aws", "runpod"):
+        try:
+            backend = _get_backend(backend_name)
+            cleaned = backend.gc()
+            for item in cleaned:
+                print(f"  Cleaned: {item}")
+            if not cleaned:
+                print(f"  {backend_name}: no orphaned resources")
+        except (ImportError, Exception) as e:
+            print(f"  {backend_name}: skipped ({e})")
+
+
+def cmd_terminate(args):
+    """Force-terminate a running cloud instance."""
+    state = remote._load_state(args.run_id)
+    backend = _get_backend(state.get("backend", "aws"))
+    remote.terminate_run(args.run_id, backend)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_backend(name: str):
+    if name == "aws":
+        from cloud.backends.aws import AWSBackend
+        return AWSBackend()
+    elif name == "runpod":
+        from cloud.backends.runpod import RunPodBackend
+        return RunPodBackend()
+    else:
+        raise ValueError(f"Unknown backend: {name}")
+
+
+def _print_run(r: dict):
+    print(f"Run ID:     {r['run_id']}")
+    print(f"Status:     {r['status']}")
+    print(f"Backend:    {r.get('backend', '?')} {r.get('instance_type', '')}")
+    print(f"Instance:   {r.get('instance_id', '-')}")
+    print(f"Command:    {r.get('command', '-')}")
+    print(f"Started:    {r.get('started_at', '-')}")
+    if r.get("finished_at"):
+        print(f"Finished:   {r['finished_at']}")
+    if r.get("exit_code") is not None:
+        print(f"Exit code:  {r['exit_code']}")
+    if r.get("elapsed_seconds"):
+        print(f"Elapsed:    {r['elapsed_seconds']//60}m{r['elapsed_seconds']%60}s")
+    if r.get("local_results_dir"):
+        print(f"Results:    {r['local_results_dir']}")
+    if r.get("error"):
+        print(f"Error:      {r['error']}")
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="cloud-run",
+        description="Remote experiment execution for orchestration-kit",
+    )
+    sub = parser.add_subparsers(dest="subcmd")
+
+    # --- run (default when a command string is given) ---
+    p_run = sub.add_parser("run", help="Execute experiment remotely")
+    p_run.add_argument("command", help="Shell command to execute on remote instance")
+    p_run.add_argument("--spec", help="Experiment spec file (for compute profile)")
+    p_run.add_argument("--backend", choices=["aws", "runpod"], help="Force backend")
+    p_run.add_argument("--instance-type", help="Override instance type")
+    p_run.add_argument("--data-dirs", help="Comma-separated local dirs to upload")
+    p_run.add_argument("--sync-back", default="results", help="Remote dir to pull results from")
+    p_run.add_argument("--output-dir", help="Local dir for downloaded results")
+    p_run.add_argument("--project-root", help="Project root to upload (default: cwd or $PROJECT_ROOT)")
+    p_run.add_argument("--spot", action="store_true", default=True, help="Use spot instances (default)")
+    p_run.add_argument("--on-demand", action="store_true", help="Use on-demand instances")
+    p_run.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS, help=f"Auto-terminate after N hours (default: {DEFAULT_MAX_HOURS})")
+    p_run.add_argument("--detach", action="store_true", help="Launch and return immediately")
+    p_run.add_argument("--dry-run", action="store_true", help="Show what would happen")
+    p_run.add_argument("--force", action="store_true", help="Run remotely even if preflight says local")
+    p_run.add_argument("--env", action="append", help="Extra env vars (KEY=VALUE), repeatable")
+    p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    p_run.set_defaults(func=cmd_run)
+
+    # --- status ---
+    p_status = sub.add_parser("status", help="Check run status")
+    p_status.add_argument("run_id", nargs="?", help="Run ID (default: most recent)")
+    p_status.set_defaults(func=cmd_status)
+
+    # --- pull ---
+    p_pull = sub.add_parser("pull", help="Download results")
+    p_pull.add_argument("run_id", help="Run ID")
+    p_pull.add_argument("--output-dir", help="Local dir for results")
+    p_pull.set_defaults(func=cmd_pull)
+
+    # --- ls ---
+    p_ls = sub.add_parser("ls", help="List tracked runs")
+    p_ls.set_defaults(func=cmd_ls)
+
+    # --- gc ---
+    p_gc = sub.add_parser("gc", help="Garbage-collect orphaned resources")
+    p_gc.set_defaults(func=cmd_gc)
+
+    # --- terminate ---
+    p_term = sub.add_parser("terminate", help="Force-terminate a run")
+    p_term.add_argument("run_id", help="Run ID")
+    p_term.set_defaults(func=cmd_terminate)
+
+    args = parser.parse_args()
+
+    if not args.subcmd:
+        # If first arg looks like a command (not a subcommand), treat as "run"
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
