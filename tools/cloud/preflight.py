@@ -58,7 +58,6 @@ def check(profile: ComputeProfile) -> dict:
             "vram_gb": None,
             "cost_per_hour": 0,
             "estimated_total_cost": "$0.00",
-            "use_spot": False,
             "reason": _local_reason(profile),
         }
 

@@ -68,7 +68,7 @@ RUNPOD_GPUS = {
     },
 }
 
-RUNPOD_DEFAULT_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+RUNPOD_DEFAULT_IMAGE = "runpod/pytorch:2.1.0-py3.11-cuda11.8.0-devel-ubuntu22.04"
 RUNPOD_DEFAULT_DATACENTER = "US-NC-1"
 RUNPOD_S3_ENDPOINT_TEMPLATE = "https://s3api-{dc}.runpod.io/"
 

@@ -37,9 +37,12 @@ echo "MAX_HOURS=$MAX_HOURS"
 # -----------------------------------------------------------------------
 # 1. Install AWS CLI (for S3 access)
 # -----------------------------------------------------------------------
+echo "=== Installing uv ==="
+pip install -q uv 2>/dev/null || true
+
 if ! command -v aws &>/dev/null; then
     echo "=== Installing AWS CLI ==="
-    pip install -q awscli 2>/dev/null || {
+    uv pip install --system -q awscli 2>/dev/null || {
         curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
         cd /tmp && unzip -q awscliv2.zip && ./aws/install --update
         cd /workspace
@@ -71,7 +74,7 @@ fi
 # -----------------------------------------------------------------------
 if [ -f "${WORKDIR}/requirements.txt" ]; then
     echo "=== Installing dependencies ==="
-    pip install --no-cache-dir -q -r "${WORKDIR}/requirements.txt"
+    uv pip install --system --no-cache-dir -q -r "${WORKDIR}/requirements.txt"
 fi
 
 # -----------------------------------------------------------------------

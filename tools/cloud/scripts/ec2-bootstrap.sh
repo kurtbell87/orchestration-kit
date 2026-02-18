@@ -11,7 +11,7 @@ LOGFILE="/var/log/experiment.log"
 S3_BASE="s3://${S3_BUCKET}/${S3_PREFIX}"
 
 # Trap: ensure exit_code is always written, even on unexpected failure
-trap '_ec=$?; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
+trap '_ec=${FINAL_EXIT_CODE:-$?}; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
 
 exec > >(tee -a "$LOGFILE") 2>&1
 echo "=== Bootstrap start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
@@ -77,7 +77,7 @@ echo "Command: $EXPERIMENT_COMMAND"
 # Build a requirements install step if requirements.txt exists
 INSTALL_CMD=""
 if [ -f "${WORKDIR}/requirements.txt" ]; then
-    INSTALL_CMD="pip install --no-cache-dir -q -r /work/requirements.txt &&"
+    INSTALL_CMD="pip install -q uv && uv pip install --system --no-cache-dir -q -r /work/requirements.txt &&"
 fi
 
 EXIT_CODE=0
@@ -86,7 +86,7 @@ docker run --rm \
     -w /work \
     -e AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION" \
     -e RUN_ID="$RUN_ID" \
-    python:3.11-slim \
+    python:3.12-slim \
     bash -c "${INSTALL_CMD} ${EXPERIMENT_COMMAND}" \
     >> "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
@@ -114,4 +114,5 @@ echo "=== Bootstrap complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 # -----------------------------------------------------------------------
 # 7. Shutdown (instance-initiated shutdown behavior = terminate)
 # -----------------------------------------------------------------------
+FINAL_EXIT_CODE=$EXIT_CODE
 shutdown -h now

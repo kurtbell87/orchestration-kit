@@ -49,7 +49,7 @@ def cmd_run(args):
                 backend_name = pf["backend"]
         if not instance_type:
             instance_type = pf.get("instance_type", "c7a.8xlarge")
-        if "use_spot" in pf:
+        if "use_spot" in pf and pf["recommendation"] != "local":
             use_spot = pf["use_spot"] and not args.on_demand
 
     # Defaults if still not set
