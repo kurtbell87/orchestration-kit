@@ -8,6 +8,7 @@ Usage:
   tools/cloud-run ls                                        # List tracked runs
   tools/cloud-run gc                                        # Clean up orphaned resources
   tools/cloud-run terminate <run-id>                        # Force-terminate a run
+  tools/cloud-run reap [--dry-run] [--hard-ceiling N]       # Terminate expired instances
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cloud import remote, s3
 from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER
 from cloud.preflight import check_spec
+from cloud.remote import DuplicateSpecError
+from cloud import state as project_state
+from cloud.reaper import reap as reap_instances
 
 
 def cmd_run(args):
@@ -72,23 +76,28 @@ def cmd_run(args):
     # Instantiate backend (deferred for dry-run — no SDK needed)
     backend = None if args.dry_run else _get_backend(backend_name)
 
-    result = remote.run(
-        command=command,
-        backend=backend,
-        backend_name=backend_name,
-        project_root=project_root,
-        spec_file=spec_file,
-        instance_type=instance_type,
-        data_dirs=data_dirs,
-        sync_back=args.sync_back,
-        local_results_dir=args.output_dir,
-        use_spot=use_spot,
-        max_hours=args.max_hours,
-        detach=args.detach,
-        dry_run=args.dry_run,
-        env_vars=env_vars,
-        network_volume_id=getattr(args, "volume", None),
-    )
+    try:
+        result = remote.run(
+            command=command,
+            backend=backend,
+            backend_name=backend_name,
+            project_root=project_root,
+            spec_file=spec_file,
+            instance_type=instance_type,
+            data_dirs=data_dirs,
+            sync_back=args.sync_back,
+            local_results_dir=args.output_dir,
+            use_spot=use_spot,
+            max_hours=args.max_hours,
+            detach=args.detach,
+            dry_run=args.dry_run,
+            env_vars=env_vars,
+            network_volume_id=getattr(args, "volume", None),
+            allow_duplicate=args.allow_duplicate,
+        )
+    except DuplicateSpecError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if args.json_output:
         print(json.dumps(result, indent=2))
@@ -110,9 +119,15 @@ def cmd_run(args):
 
 def cmd_status(args):
     """Check the status of a cloud run."""
+    project_root = getattr(args, "project_root", None) or os.environ.get("PROJECT_ROOT")
     if args.run_id:
         result = remote.poll_status(args.run_id)
         _print_run(result)
+        # Verify against project-local state and clean stale entries
+        if project_root:
+            local = project_state.get_run(project_root, args.run_id)
+            if local and result["status"] in ("completed", "failed", "terminated", "error"):
+                project_state.remove_run(project_root, args.run_id)
     else:
         # Show status of most recent run
         runs = remote.list_runs()
@@ -130,8 +145,23 @@ def cmd_pull(args):
 
 
 def cmd_ls(args):
-    """List all tracked cloud runs."""
+    """List all tracked cloud runs (merges global + project-local state)."""
     runs = remote.list_runs()
+
+    # Merge project-local active runs not already in global state
+    project_root = getattr(args, "project_root", None) or os.environ.get("PROJECT_ROOT")
+    if project_root:
+        global_ids = {r["run_id"] for r in runs}
+        for local in project_state.list_active_runs(project_root):
+            if local["run_id"] not in global_ids:
+                runs.append({
+                    "run_id": local["run_id"],
+                    "backend": local.get("backend", "?"),
+                    "status": "active(local)",
+                    "instance_type": local.get("instance_type", ""),
+                    "command": "",
+                })
+
     if not runs:
         print("No tracked runs.")
         return
@@ -141,9 +171,9 @@ def cmd_ls(args):
         if r["status"] in ("running", "provisioning"):
             r = remote.poll_status(r["run_id"])
 
-    fmt = "{:<36}  {:<12}  {:<6}  {:<12}  {:<8}  {}"
+    fmt = "{:<36}  {:<12}  {:<6}  {:<14}  {:<8}  {}"
     print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "HOURS", "COMMAND"))
-    print("-" * 100)
+    print("-" * 104)
     for r in runs:
         ec = str(r.get("exit_code", "-"))
         hrs = ""
@@ -175,6 +205,24 @@ def cmd_terminate(args):
     state = remote._load_state(args.run_id)
     backend = _get_backend(state.get("backend", "aws"))
     remote.terminate_run(args.run_id, backend)
+
+
+def cmd_reap(args):
+    """Reap expired cloud instances past their lease or hard ceiling."""
+    backend = _get_backend(args.backend)
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT")
+    actions = reap_instances(
+        backend,
+        dry_run=args.dry_run,
+        hard_ceiling_hours=args.hard_ceiling,
+        project_root=project_root,
+    )
+    if not actions:
+        print("No instances to reap.")
+        return
+    for a in actions:
+        print(f"  {a['action']}: {a['instance_id']}  run={a['run_id']}  age={a['age_hours']:.1f}h  reason={a['reason']}")
+    print(f"\nTotal: {len(actions)} instance(s) {'would be reaped' if args.dry_run else 'reaped'}.")
 
 
 def cmd_volume_create(args):
@@ -278,6 +326,7 @@ def main():
     p_run.add_argument("--force", action="store_true", help="Run remotely even if preflight says local")
     p_run.add_argument("--env", action="append", help="Extra env vars (KEY=VALUE), repeatable")
     p_run.add_argument("--volume", help="RunPod network volume ID to mount at /workspace")
+    p_run.add_argument("--allow-duplicate", action="store_true", help="Allow launching even if an instance with the same spec is running")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 
@@ -304,6 +353,14 @@ def main():
     p_term = sub.add_parser("terminate", help="Force-terminate a run")
     p_term.add_argument("run_id", help="Run ID")
     p_term.set_defaults(func=cmd_terminate)
+
+    # --- reap ---
+    p_reap = sub.add_parser("reap", help="Terminate expired cloud instances")
+    p_reap.add_argument("--dry-run", action="store_true", help="Show what would be reaped without terminating")
+    p_reap.add_argument("--hard-ceiling", type=float, default=24, help="Hard ceiling in hours (default: 24)")
+    p_reap.add_argument("--backend", default="aws", choices=["aws", "runpod"], help="Backend to reap (default: aws)")
+    p_reap.add_argument("--project-root", help="Project root for cleaning local state")
+    p_reap.set_defaults(func=cmd_reap)
 
     # --- volume ---
     p_vol = sub.add_parser("volume", help="Manage RunPod network volumes")

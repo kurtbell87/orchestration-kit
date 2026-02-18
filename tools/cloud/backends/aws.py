@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from ..config import (
     AWS_REGION,
@@ -39,11 +43,33 @@ class AWSBackend(ComputeBackend):
         """Launch an EC2 instance with the bootstrap user-data script.
 
         Handles spot requests with on-demand fallback.
+        Idempotent: returns existing instance if one is already running for this run_id.
         """
+        # --- Idempotency: check for existing instance with same run_id ---
+        existing = self._find_existing_instance(config.run_id)
+        if existing:
+            log.warning(
+                "Instance %s already running for run %s — returning existing",
+                existing, config.run_id,
+            )
+            return existing
+
         ami_id = self._get_latest_ami()
         sg_id = self._ensure_security_group(config.run_id)
         user_data = self._render_user_data(config)
-        tags = {**RESOURCE_TAGS, "RunId": config.run_id, **config.tags}
+
+        launched_at = datetime.now(timezone.utc).isoformat()
+        config.launched_at = launched_at
+
+        tags = {
+            **RESOURCE_TAGS,
+            "RunId": config.run_id,
+            **config.tags,
+            "cloud-run:run-id": config.run_id,
+            "cloud-run:spec": (config.tags.get("SpecFile", "") or "")[:256],
+            "cloud-run:max-hours": str(config.max_hours),
+            "cloud-run:launched-at": launched_at,
+        }
         tag_specs = [
             {
                 "ResourceType": rt,
@@ -51,6 +77,9 @@ class AWSBackend(ComputeBackend):
             }
             for rt in ["instance", "volume"]
         ]
+
+        # EC2-native idempotency token (max 64 chars, 7-day dedup window)
+        client_token = f"cloud-run-{config.run_id}"[:64]
 
         launch_kwargs = dict(
             ImageId=ami_id,
@@ -61,6 +90,7 @@ class AWSBackend(ComputeBackend):
             MinCount=1,
             MaxCount=1,
             TagSpecifications=tag_specs,
+            ClientToken=client_token,
             # Auto-terminate when the instance shuts itself down
             InstanceInitiatedShutdownBehavior="terminate",
             # IAM role for S3 access (if instance profile exists)
@@ -186,9 +216,46 @@ class AWSBackend(ComputeBackend):
 
         return cleaned
 
+    def find_instances_by_spec(self, spec: str) -> list[dict]:
+        """Find running/pending instances tagged with the given spec file."""
+        paginator = self._ec2.get_paginator("describe_instances")
+        pages = paginator.paginate(
+            Filters=[
+                {"Name": "tag:cloud-run:spec", "Values": [spec[:256]]},
+                {"Name": "instance-state-name", "Values": ["running", "pending"]},
+            ]
+        )
+        results = []
+        for page in pages:
+            for res in page["Reservations"]:
+                for inst in res["Instances"]:
+                    tag_map = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+                    results.append({
+                        "instance_id": inst["InstanceId"],
+                        "run_id": tag_map.get("cloud-run:run-id", ""),
+                        "launched_at": tag_map.get("cloud-run:launched-at", ""),
+                        "state": inst["State"]["Name"],
+                    })
+        return results
+
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
+
+    def _find_existing_instance(self, run_id: str) -> Optional[str]:
+        """Return instance ID if a running/pending instance exists for this run_id."""
+        paginator = self._ec2.get_paginator("describe_instances")
+        pages = paginator.paginate(
+            Filters=[
+                {"Name": "tag:cloud-run:run-id", "Values": [run_id]},
+                {"Name": "instance-state-name", "Values": ["running", "pending"]},
+            ]
+        )
+        for page in pages:
+            for res in page["Reservations"]:
+                for inst in res["Instances"]:
+                    return inst["InstanceId"]
+        return None
 
     def _get_latest_ami(self) -> str:
         """Get latest Amazon Linux 2023 x86_64 AMI.

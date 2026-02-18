@@ -25,6 +25,9 @@ class InstanceConfig:
     gpu_type: Optional[str] = None
     network_volume_id: Optional[str] = None
 
+    # Set by backend after launch
+    launched_at: Optional[str] = None       # ISO 8601 UTC timestamp
+
 
 class ComputeBackend(ABC):
     """Interface for cloud compute backends (EC2, RunPod)."""
@@ -57,3 +60,11 @@ class ComputeBackend(ABC):
 
         Returns list of cleaned-up resource descriptions.
         """
+
+    def find_instances_by_spec(self, spec: str) -> list[dict]:
+        """Find running instances launched for a given spec file.
+
+        Returns list of dicts with instance_id, run_id, launched_at, state.
+        Default implementation returns [] (no spec-level tracking).
+        """
+        return []

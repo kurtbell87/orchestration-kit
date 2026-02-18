@@ -18,6 +18,11 @@ from .config import (
     RESOURCE_TAGS,
 )
 from . import s3 as s3_helper
+from . import state as project_state
+
+
+class DuplicateSpecError(RuntimeError):
+    """Raised when an instance is already running for the same spec file."""
 
 
 def _state_dir() -> Path:
@@ -74,6 +79,7 @@ def run(
     env_vars: Optional[dict[str, str]] = None,
     tags: Optional[dict[str, str]] = None,
     network_volume_id: Optional[str] = None,
+    allow_duplicate: bool = False,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -110,6 +116,17 @@ def run(
     _save_state(run_id, state)
 
     try:
+        # --- 0. Spec duplicate check ---
+        if spec_file and not allow_duplicate and backend is not None:
+            existing = backend.find_instances_by_spec(spec_file)
+            if existing:
+                _update_state(run_id, status="blocked_duplicate")
+                ids = ", ".join(e["instance_id"] for e in existing)
+                raise DuplicateSpecError(
+                    f"Instance(s) already running for spec '{spec_file}': {ids}. "
+                    "Use --allow-duplicate to override."
+                )
+
         # --- 1. Upload code + data ---
         print(f"[{run_id}] Uploading code to S3...")
         s3_helper.upload_code(project_root, run_id)
@@ -134,6 +151,17 @@ def run(
         instance_id = backend.provision(config)
         _update_state(run_id, instance_id=instance_id, status="provisioning")
         print(f"[{run_id}] Instance launched: {instance_id}")
+
+        # --- Register in project-local state ---
+        project_state.register_run(
+            project_root, run_id,
+            instance_id=instance_id,
+            backend=backend_name,
+            instance_type=instance_type,
+            spec_file=spec_file,
+            launched_at=config.launched_at,
+            max_hours=max_hours,
+        )
 
         # --- 3. Wait for ready ---
         wait_timeout = max(900, int(max_hours * 3600))
@@ -200,7 +228,7 @@ def pull_results(run_id: str, local_dir: Optional[str] = None) -> str:
     return local_dir
 
 
-def terminate_run(run_id: str, backend: ComputeBackend) -> None:
+def terminate_run(run_id: str, backend: ComputeBackend, project_root: Optional[str] = None) -> None:
     """Terminate a running instance for a given run."""
     state = _load_state(run_id)
     instance_id = state.get("instance_id")
@@ -208,6 +236,10 @@ def terminate_run(run_id: str, backend: ComputeBackend) -> None:
         print(f"[{run_id}] Terminating instance {instance_id}...")
         backend.terminate(instance_id)
         _update_state(run_id, status="terminated", finished_at=datetime.now(timezone.utc).isoformat())
+        # Clean project-local state
+        pr = project_root or state.get("project_root")
+        if pr:
+            project_state.remove_run(pr, run_id)
         print(f"[{run_id}] Instance terminated.")
     else:
         print(f"[{run_id}] No instance to terminate.")
@@ -285,4 +317,10 @@ def _poll_and_retrieve(
     except Exception:
         pass
 
-    return _load_state(run_id)
+    # Clean project-local state
+    final = _load_state(run_id)
+    pr = final.get("project_root")
+    if pr:
+        project_state.remove_run(pr, run_id)
+
+    return final
