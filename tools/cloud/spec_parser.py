@@ -66,7 +66,12 @@ def parse_spec(spec_path: str | Path) -> ComputeProfile:
     )
     yaml_match = yaml_pattern.search(text)
     if not yaml_match:
-        return profile
+        raise ValueError(
+            f"Spec '{spec_path}' is missing a '### Compute Profile' YAML block. "
+            "This is mandatory for all experiment specs. Add a fenced ```yaml block "
+            "under '### Compute Profile' in the Resource Budget section. "
+            "See research-kit/templates/experiment-spec.md for the required format."
+        )
 
     yaml_text = yaml_match.group(1)
 

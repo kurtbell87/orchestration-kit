@@ -113,10 +113,26 @@ The RUN agent should execute this BEFORE the full protocol.]
 4. ...]
 
 ## Resource Budget
+**Tier:** _Quick | Standard | Heavy_
 - Max GPU-hours: [N]
 - Max wall-clock time: [N hours]
 - Max training runs: [N]
 - Max seeds per configuration: [N]
+
+### Compute Profile
+<!-- MANDATORY. Parsed by tools/preflight to decide local vs cloud execution.
+     If this block is missing, the RUN phase will abort.
+     Estimate wall hours from actual data size × fit count. -->
+```yaml
+compute_type: cpu            # cpu | gpu
+estimated_rows: [N]          # total rows across all fits
+model_type: [type]           # xgboost, sklearn, pytorch, polars, other
+sequential_fits: [N]         # number of sequential model fits (folds × configs)
+parallelizable: [true|false] # can fits run in parallel?
+memory_gb: [N]               # peak memory estimate
+gpu_type: none               # none, any, A100, H100
+estimated_wall_hours: [N]    # total estimated wall time INCLUDING data processing
+```
 
 ## Abort Criteria
 [When to stop early — saves resources on clearly-failing experiments.
@@ -135,6 +151,7 @@ The READ agent will check these during analysis.]
 - **Success criteria**: Must be binary pass/fail. No partial credit. No "shows promise."
 - **Baselines**: Must be reproducible. "Published result from paper X" requires a reproduction step.
 - **Resource budget**: Must fit the declared tier. Estimate wall time from actual data sizes before committing.
+- **Compute Profile**: MANDATORY. Every spec MUST include a `### Compute Profile` fenced YAML block under Resource Budget. The `estimated_wall_hours` field must reflect the total wall time including data processing, feature export, and model fitting — not just training. If this block is missing, `tools/preflight` returns garbage defaults and the RUN phase cannot make correct local-vs-cloud decisions. The spec is **invalid** without it.
 - **Abort criteria**: Must exist. Open-ended experiments waste resources. Time-based abort thresholds must use 3-5x the expected per-run time — unrealistically tight time aborts cause kill-restart cycles that waste more time than they save.
 - **Proportionality**: Protocol complexity must match question importance. A "does X help at all?" gate check does not need an exhaustive multi-factor design. That's a Standard-tier protocol for a Quick-tier question.
 
