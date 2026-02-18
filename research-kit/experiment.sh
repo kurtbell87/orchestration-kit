@@ -479,7 +479,7 @@ run_run() {
   local _okit="${ORCHESTRATION_KIT_ROOT:-}"
   if [[ -n "$_okit" ]] && command -v python3 &>/dev/null; then
     local _pf_out _pf_err _pf_rc=0
-    _pf_err=$(python3 "$_okit/tools/cloud/preflight.py" "$spec_file" --json 2>&1 1>/dev/null) || _pf_rc=$?
+    _pf_err=$(python3 "$_okit/tools/preflight" "$spec_file" --json 2>&1 1>/dev/null) || _pf_rc=$?
     if [[ $_pf_rc -ne 0 ]]; then
       echo "ERROR: Pre-flight check failed for $spec_file" >&2
       echo "$_pf_err" >&2
@@ -487,7 +487,7 @@ run_run() {
       echo "Add one under '## Resource Budget'. See research-kit/templates/experiment-spec.md." >&2
       return 1
     fi
-    _pf_out=$(python3 "$_okit/tools/cloud/preflight.py" "$spec_file" --json 2>/dev/null)
+    _pf_out=$(python3 "$_okit/tools/preflight" "$spec_file" --json 2>/dev/null)
     if [[ -n "$_pf_out" ]]; then
       local _rec
       _rec=$(echo "$_pf_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('recommendation',''))" 2>/dev/null || true)
