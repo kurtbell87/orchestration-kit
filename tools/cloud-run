@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cloud import remote, s3
-from cloud.config import DEFAULT_MAX_HOURS
+from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER
 from cloud.preflight import check_spec
 
 
@@ -87,6 +87,7 @@ def cmd_run(args):
         detach=args.detach,
         dry_run=args.dry_run,
         env_vars=env_vars,
+        network_volume_id=getattr(args, "volume", None),
     )
 
     if args.json_output:
@@ -176,6 +177,44 @@ def cmd_terminate(args):
     remote.terminate_run(args.run_id, backend)
 
 
+def cmd_volume_create(args):
+    """Create a RunPod network volume."""
+    backend = _get_backend("runpod")
+    vol_id = backend.create_network_volume(args.name, args.size, args.datacenter)
+    print(f"Created volume: {vol_id} ({args.name}, {args.size}GB, {args.datacenter})")
+
+
+def cmd_volume_destroy(args):
+    """Destroy a RunPod network volume."""
+    backend = _get_backend("runpod")
+    backend.destroy_volume(args.volume_id)
+    print(f"Destroyed volume: {args.volume_id}")
+
+
+def cmd_volume_sync(args):
+    """Sync a file or directory to a RunPod network volume via S3 API."""
+    backend = _get_backend("runpod")
+    backend.sync_to_volume(args.volume_id, args.source, args.datacenter)
+    print(f"Synced {args.source} → volume {args.volume_id}")
+
+
+def cmd_volume_ls(args):
+    """List RunPod network volumes."""
+    backend = _get_backend("runpod")
+    volumes = backend.list_volumes()
+    if not volumes:
+        print("No network volumes.")
+        return
+    fmt = "{:<14}  {:<24}  {:>6}  {:<10}"
+    print(fmt.format("ID", "NAME", "SIZE", "DATACENTER"))
+    print("-" * 60)
+    for v in volumes:
+        print(fmt.format(
+            v.get("id", "?"), v.get("name", "?"),
+            f"{v.get('size', '?')}GB", v.get("dataCenterId", "?"),
+        ))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -238,6 +277,7 @@ def main():
     p_run.add_argument("--dry-run", action="store_true", help="Show what would happen")
     p_run.add_argument("--force", action="store_true", help="Run remotely even if preflight says local")
     p_run.add_argument("--env", action="append", help="Extra env vars (KEY=VALUE), repeatable")
+    p_run.add_argument("--volume", help="RunPod network volume ID to mount at /workspace")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 
@@ -265,11 +305,37 @@ def main():
     p_term.add_argument("run_id", help="Run ID")
     p_term.set_defaults(func=cmd_terminate)
 
+    # --- volume ---
+    p_vol = sub.add_parser("volume", help="Manage RunPod network volumes")
+    vol_sub = p_vol.add_subparsers(dest="vol_cmd")
+
+    p_vc = vol_sub.add_parser("create", help="Create a network volume")
+    p_vc.add_argument("name", help="Volume name")
+    p_vc.add_argument("--size", type=int, default=10, help="Size in GB (default: 10, min: 10)")
+    p_vc.add_argument("--datacenter", default=RUNPOD_DEFAULT_DATACENTER, help=f"Datacenter (default: {RUNPOD_DEFAULT_DATACENTER})")
+    p_vc.set_defaults(func=cmd_volume_create)
+
+    p_vd = vol_sub.add_parser("destroy", help="Destroy a network volume")
+    p_vd.add_argument("volume_id", help="Volume ID")
+    p_vd.set_defaults(func=cmd_volume_destroy)
+
+    p_vs = vol_sub.add_parser("sync", help="Sync file/dir to a volume via S3 API")
+    p_vs.add_argument("volume_id", help="Volume ID")
+    p_vs.add_argument("source", help="Local file or directory to upload")
+    p_vs.add_argument("--datacenter", default=RUNPOD_DEFAULT_DATACENTER, help=f"Datacenter (default: {RUNPOD_DEFAULT_DATACENTER})")
+    p_vs.set_defaults(func=cmd_volume_sync)
+
+    p_vl = vol_sub.add_parser("ls", help="List network volumes")
+    p_vl.set_defaults(func=cmd_volume_ls)
+
     args = parser.parse_args()
 
     if not args.subcmd:
-        # If first arg looks like a command (not a subcommand), treat as "run"
         parser.print_help()
+        sys.exit(1)
+
+    if args.subcmd == "volume" and not getattr(args, "vol_cmd", None):
+        p_vol.print_help()
         sys.exit(1)
 
     args.func(args)

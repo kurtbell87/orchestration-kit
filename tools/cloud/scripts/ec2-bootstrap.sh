@@ -10,6 +10,9 @@ WORKDIR="/opt/experiment"
 LOGFILE="/var/log/experiment.log"
 S3_BASE="s3://${S3_BUCKET}/${S3_PREFIX}"
 
+# Trap: ensure exit_code is always written, even on unexpected failure
+trap '_ec=$?; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
+
 exec > >(tee -a "$LOGFILE") 2>&1
 echo "=== Bootstrap start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 echo "RUN_ID=$RUN_ID"

@@ -73,6 +73,7 @@ def run(
     dry_run: bool = False,
     env_vars: Optional[dict[str, str]] = None,
     tags: Optional[dict[str, str]] = None,
+    network_volume_id: Optional[str] = None,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -128,14 +129,16 @@ def run(
             use_spot=use_spot,
             env_vars=env_vars or {},
             tags={**(tags or {}), "SpecFile": spec_file or ""},
+            network_volume_id=network_volume_id,
         )
         instance_id = backend.provision(config)
         _update_state(run_id, instance_id=instance_id, status="provisioning")
         print(f"[{run_id}] Instance launched: {instance_id}")
 
         # --- 3. Wait for ready ---
-        print(f"[{run_id}] Waiting for instance to be ready...")
-        backend.wait_ready(instance_id)
+        wait_timeout = max(900, int(max_hours * 3600))
+        print(f"[{run_id}] Waiting for instance to be ready (timeout {wait_timeout}s)...")
+        backend.wait_ready(instance_id, timeout=wait_timeout)
         _update_state(run_id, status="running")
         print(f"[{run_id}] Instance ready. Experiment executing remotely.")
 
