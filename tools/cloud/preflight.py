@@ -7,6 +7,8 @@ from dataclasses import asdict
 from typing import Optional
 
 from .config import (
+    CLOUD_OVERHEAD_FLOOR_HOURS,
+    CLOUD_PREFERENCE,
     LOCAL_MAX_MEMORY_GB,
     LOCAL_MAX_WALL_HOURS,
     EC2_INSTANCES,
@@ -18,24 +20,35 @@ from .config import (
 from .spec_parser import ComputeProfile, parse_spec
 
 
-def check(profile: ComputeProfile) -> dict:
+def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
     """Evaluate a compute profile and return a recommendation.
+
+    Args:
+        profile: Parsed compute profile from spec.
+        preference: Override cloud preference (default: read from env/config).
 
     Returns a dict with:
         recommendation: "local" | "remote"
         backend: "aws" | "runpod" | null
         instance_type: str | null
         vcpus / memory_gb / cost info
+        cloud_preference: the active preference value
+        preference_override: true if job could run locally but preference overrode
         reason: human-readable explanation
     """
-    # GPU workloads → RunPod
+    pref = preference if preference is not None else CLOUD_PREFERENCE
+    base_fields = {"cloud_preference": pref}
+
+    # GPU workloads → RunPod (always remote, regardless of preference)
     if profile.compute_type == "gpu" or (
         profile.gpu_type and profile.gpu_type not in ("none", "")
     ):
         gpu_info = select_runpod_gpu(profile.gpu_type)
         est_cost = gpu_info["cost_per_hour"] * max(profile.estimated_wall_hours, 0.5)
         return {
+            **base_fields,
             "recommendation": "remote",
+            "preference_override": False,
             "backend": "runpod",
             "instance_type": gpu_info["gpu_id"],
             "vcpus": None,
@@ -47,10 +60,16 @@ def check(profile: ComputeProfile) -> dict:
             "reason": _gpu_reason(profile, gpu_info),
         }
 
-    # CPU workloads — check if local is sufficient
-    if _can_run_locally(profile):
+    # CPU workloads — check if local is sufficient (threshold-based)
+    locally_feasible = _fits_local_thresholds(profile)
+
+    # Apply preference logic
+    if locally_feasible and pref == "local":
+        # Default behavior: run locally when thresholds allow
         return {
+            **base_fields,
             "recommendation": "local",
+            "preference_override": False,
             "backend": None,
             "instance_type": None,
             "vcpus": None,
@@ -61,19 +80,65 @@ def check(profile: ComputeProfile) -> dict:
             "reason": _local_reason(profile),
         }
 
-    # CPU workload that exceeds local thresholds → AWS EC2
+    if locally_feasible and pref in ("cloud-first", "cloud-always"):
+        # Job fits locally, but preference says use cloud — check overhead floor
+        if profile.estimated_wall_hours < CLOUD_OVERHEAD_FLOOR_HOURS:
+            return {
+                **base_fields,
+                "recommendation": "local",
+                "preference_override": False,
+                "backend": None,
+                "instance_type": None,
+                "vcpus": None,
+                "memory_gb": None,
+                "vram_gb": None,
+                "cost_per_hour": 0,
+                "estimated_total_cost": "$0.00",
+                "reason": (
+                    f"Local execution OK: est. {profile.estimated_wall_hours}h "
+                    f"is below overhead floor ({CLOUD_OVERHEAD_FLOOR_HOURS}h). "
+                    f"Cloud provisioning would take longer than the job itself."
+                ),
+            }
+        # Override: send to cloud even though local could handle it
+        instance_type = select_ec2_instance(
+            profile.sequential_fits, profile.estimated_rows
+        )
+        inst = EC2_INSTANCES[instance_type]
+        use_spot = should_use_spot(profile.estimated_wall_hours)
+        hours = max(profile.estimated_wall_hours, 0.5)
+        est_cost_spot = inst["cost_spot"] * hours
+        est_cost_od = inst["cost_ondemand"] * hours
+        return {
+            **base_fields,
+            "recommendation": "remote",
+            "preference_override": True,
+            "backend": "aws",
+            "instance_type": instance_type,
+            "vcpus": inst["vcpus"],
+            "memory_gb": inst["memory_gb"],
+            "vram_gb": None,
+            "cost_per_hour_spot": inst["cost_spot"],
+            "cost_per_hour_ondemand": inst["cost_ondemand"],
+            "estimated_total_cost": f"${est_cost_spot:.2f} (spot) – ${est_cost_od:.2f} (on-demand)",
+            "use_spot": use_spot,
+            "reason": _preference_override_reason(pref, profile, instance_type, inst),
+        }
+
+    # Not locally feasible — exceeds thresholds → AWS EC2
     instance_type = select_ec2_instance(
         profile.sequential_fits, profile.estimated_rows
     )
     inst = EC2_INSTANCES[instance_type]
     use_spot = should_use_spot(profile.estimated_wall_hours)
-    rate = inst["cost_spot"] if use_spot else inst["cost_ondemand"]
     hours = max(profile.estimated_wall_hours, 0.5)
     est_cost_spot = inst["cost_spot"] * hours
     est_cost_od = inst["cost_ondemand"] * hours
 
     return {
+        **base_fields,
         "recommendation": "remote",
+        "preference_override": False,
         "backend": "aws",
         "instance_type": instance_type,
         "vcpus": inst["vcpus"],
@@ -87,10 +152,10 @@ def check(profile: ComputeProfile) -> dict:
     }
 
 
-def check_spec(spec_path: str) -> dict:
+def check_spec(spec_path: str, preference: Optional[str] = None) -> dict:
     """Convenience: parse spec file and run pre-flight check."""
     profile = parse_spec(spec_path)
-    result = check(profile)
+    result = check(profile, preference=preference)
     result["spec_file"] = str(spec_path)
     result["profile"] = asdict(profile)
     return result
@@ -100,8 +165,8 @@ def check_spec(spec_path: str) -> dict:
 # Decision helpers
 # ---------------------------------------------------------------------------
 
-def _can_run_locally(profile: ComputeProfile) -> bool:
-    """True if the workload fits within local machine thresholds."""
+def _fits_local_thresholds(profile: ComputeProfile) -> bool:
+    """True if the workload fits within local machine thresholds (ignoring preference)."""
     if profile.tier.lower() == "heavy":
         return False
     if profile.estimated_wall_hours > LOCAL_MAX_WALL_HOURS:
@@ -144,6 +209,22 @@ def _ec2_reason(profile: ComputeProfile, instance_type: str, inst: dict) -> str:
     )
 
 
+def _preference_override_reason(
+    pref: str, profile: ComputeProfile, instance_type: str, inst: dict
+) -> str:
+    parts = []
+    if profile.estimated_wall_hours:
+        parts.append(f"est. {profile.estimated_wall_hours}h wall time")
+    if profile.memory_gb:
+        parts.append(f"{profile.memory_gb} GB memory")
+    detail = ", ".join(parts) if parts else "within local thresholds"
+    return (
+        f"Cloud preference '{pref}': {detail}. "
+        f"Could run locally but cloud is faster (~{inst['vcpus'] // 12}x vCPUs). "
+        f"Recommended: {instance_type} ({inst['vcpus']} vCPU, {inst['memory_gb']} GB)"
+    )
+
+
 def _gpu_reason(profile: ComputeProfile, gpu_info: dict) -> str:
     parts = []
     if profile.model_type and profile.model_type != "other":
@@ -167,9 +248,15 @@ def main():
     )
     parser.add_argument("spec_file", help="Path to experiment spec (.md)")
     parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument(
+        "--preference",
+        choices=["local", "cloud-first", "cloud-always"],
+        default=None,
+        help="Override ORCHESTRATION_KIT_CLOUD_PREFERENCE for this invocation",
+    )
     args = parser.parse_args()
 
-    result = check_spec(args.spec_file)
+    result = check_spec(args.spec_file, preference=args.preference)
 
     if args.json:
         print(json.dumps(result, indent=2))

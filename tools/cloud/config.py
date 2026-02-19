@@ -1,5 +1,8 @@
 """Cloud compute configuration: instance catalog, pricing, decision thresholds."""
 
+import os
+import sys
+
 S3_BUCKET = "kenoma-labs-research"
 AWS_REGION = "us-east-1"
 SSH_KEY_NAME = "kenoma-research"
@@ -8,6 +11,29 @@ SSH_KEY_PATH = "~/.ssh/kenoma-research.pem"
 # Local machine thresholds — below these, run locally
 LOCAL_MAX_WALL_HOURS = 2.0
 LOCAL_MAX_MEMORY_GB = 16
+
+# ---------------------------------------------------------------------------
+# Cloud preference — three-tier mechanism
+# ---------------------------------------------------------------------------
+# "local"        — current behavior, cloud only when local can't handle it
+# "cloud-first"  — prefer cloud, local only for trivially small jobs
+# "cloud-always" — cloud for everything above overhead floor
+_VALID_CLOUD_PREFERENCES = ("local", "cloud-first", "cloud-always")
+
+_raw_pref = os.environ.get("ORCHESTRATION_KIT_CLOUD_PREFERENCE", "local").strip()
+if _raw_pref not in _VALID_CLOUD_PREFERENCES:
+    print(
+        f"WARNING: ORCHESTRATION_KIT_CLOUD_PREFERENCE='{_raw_pref}' is invalid. "
+        f"Valid values: {_VALID_CLOUD_PREFERENCES}. Falling back to 'local'.",
+        file=sys.stderr,
+    )
+    _raw_pref = "local"
+
+CLOUD_PREFERENCE: str = _raw_pref
+
+# Jobs under this wall-time stay local even under cloud-always,
+# because 3-5 min provisioning overhead would make cloud slower net-net.
+CLOUD_OVERHEAD_FLOOR_HOURS = 0.15  # ~10 minutes
 
 # Cost guardrails
 DEFAULT_MAX_HOURS = 12

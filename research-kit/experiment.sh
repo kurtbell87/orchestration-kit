@@ -489,8 +489,11 @@ run_run() {
     fi
     _pf_out=$(python3 "$_okit/tools/preflight" "$spec_file" --json 2>/dev/null)
     if [[ -n "$_pf_out" ]]; then
-      local _rec
+      local _rec _pref_override _cloud_pref
       _rec=$(echo "$_pf_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('recommendation',''))" 2>/dev/null || true)
+      _pref_override=$(echo "$_pf_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('preference_override', False))" 2>/dev/null || true)
+      _cloud_pref=$(echo "$_pf_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cloud_preference','local'))" 2>/dev/null || true)
+
       if [[ "$_rec" == "remote" ]]; then
         local _reason
         _reason=$(echo "$_pf_out" | python3 -c "
@@ -500,13 +503,35 @@ parts = [d.get('backend','').upper(), d.get('instance_type','')]
 if d.get('estimated_total_cost'): parts.append('est. ' + d['estimated_total_cost'])
 print(' '.join(p for p in parts if p) + '. ' + d.get('reason',''))
 " 2>/dev/null || true)
-        compute_advisory="
+
+        if [[ "$_pref_override" == "True" ]]; then
+          # Job could run locally but cloud preference overrides
+          compute_advisory="
+## Compute Advisory (Cloud Preferred)
+Cloud preference '${_cloud_pref}' is active. ${_reason}
+This job could run locally, but cloud execution will be significantly faster.
+For the full protocol, offload heavy computation to cloud:
+  tools/cloud-run run \"<command>\" --spec $spec_file --data-dirs <data-dir>
+Run the MVE locally first, then use cloud-run for the full experiment.
+If cloud is unavailable, local execution is a valid fallback."
+        else
+          # Job genuinely exceeds local thresholds
+          compute_advisory="
 ## Compute Advisory
 This experiment exceeds local compute thresholds. ${_reason}
 For the full protocol, offload heavy computation to cloud:
   tools/cloud-run run \"<command>\" --spec $spec_file --data-dirs <data-dir>
 Run the MVE locally first, then use cloud-run for the full experiment."
+        fi
+      elif [[ "$_cloud_pref" != "local" ]]; then
+        # Local recommended but cloud is configured — inform agent cloud exists as fallback
+        compute_advisory="
+## Cloud Availability Note
+Cloud compute is configured (preference: '${_cloud_pref}') but this job is small enough to run locally.
+If execution is unexpectedly slow or runs into local resource issues, cloud is available as a fallback:
+  tools/cloud-run run \"<command>\" --spec $spec_file --data-dirs <data-dir>"
       fi
+      # When cloud_preference == "local" and rec == "local": inject nothing (backwards compatible)
     fi
   fi
 

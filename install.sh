@@ -143,6 +143,11 @@ export ORCHESTRATION_KIT_MCP_HOST="$host"
 export ORCHESTRATION_KIT_MCP_PORT="$port"
 export ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES="$max_output"
 export ORCHESTRATION_KIT_MCP_TOKEN="$token"
+
+# Cloud preference: "local" (default), "cloud-first", or "cloud-always".
+# "cloud-first"  — prefer cloud for jobs >10 min est. wall time (faster with more vCPUs).
+# "cloud-always" — cloud for everything above the 10 min overhead floor.
+# export ORCHESTRATION_KIT_CLOUD_PREFERENCE="local"
 ENV
       chmod 600 "$env_file"
       echo "[install] wrote MCP env file: $env_file"
@@ -435,6 +440,11 @@ export PROJECT_ROOT="$PROJECT_ROOT"
 export ORCHESTRATION_KIT_ROOT="$ORCHESTRATION_KIT_ROOT"
 export KIT_STATE_DIR=".kit"
 ${mcp_vars}
+
+# Cloud preference: "local" (default), "cloud-first", or "cloud-always".
+# "cloud-first"  — prefer cloud for jobs >10 min est. wall time (faster with more vCPUs).
+# "cloud-always" — cloud for everything above the 10 min overhead floor.
+# export ORCHESTRATION_KIT_CLOUD_PREFERENCE="local"
 ENV
     chmod 600 "$env_file"
     echo "[install] wrote env file: $env_file"
