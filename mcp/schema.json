@@ -15,7 +15,16 @@
               "orchestrator.request_create",
               "orchestrator.pump",
               "orchestrator.run_info",
-              "orchestrator.query_log"
+              "orchestrator.query_log",
+              "kit.tdd",
+              "kit.research_cycle",
+              "kit.research_full",
+              "kit.research_program",
+              "kit.math",
+              "kit.status",
+              "kit.runs",
+              "kit.capsule",
+              "kit.research_status"
             ]
           },
           "inputSchema": {
