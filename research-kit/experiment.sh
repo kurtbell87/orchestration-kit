@@ -203,11 +203,11 @@ if texts:
 }
 
 list_experiment_specs() {
-  find "$EXPERIMENTS_DIR" -maxdepth 1 -name "exp-*.md" -type f 2>/dev/null | sort || echo "none"
+  find "$EXPERIMENTS_DIR" -maxdepth 1 -name "*.md" -not -name "survey-*" -type f 2>/dev/null | sort || echo "none"
 }
 
 list_result_dirs() {
-  find "$RESULTS_DIR" -maxdepth 1 -type d -name "exp-*" 2>/dev/null | sort || echo "none"
+  find "$RESULTS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort || echo "none"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -257,7 +257,7 @@ run_status() {
   echo -e "${CYAN}Experiments:${NC}"
   local e_total=0 e_confirmed=0 e_refuted=0 e_inconclusive=0 e_incomplete=0
   if [[ -d "$RESULTS_DIR" ]]; then
-    for d in "$RESULTS_DIR"/exp-*/; do
+    for d in "$RESULTS_DIR"/*/; do
       [[ -d "$d" ]] || continue
       e_total=$((e_total + 1))
       local analysis="$d/analysis.md"
@@ -280,7 +280,7 @@ run_status() {
   echo ""
 
   # ── Program state ──
-  local state_file="${PROGRAM_STATE_FILE:-program_state.json}"
+  local state_file="${PROGRAM_STATE_FILE:-${_SD}/program_state.json}"
   if [[ -f "$state_file" ]]; then
     echo -e "${CYAN}Program State ($state_file):${NC}"
     python3 -c "
@@ -589,6 +589,11 @@ Read the spec and metrics, then write your analysis to $results_path/analysis.md
     > "$EXP_LOG_DIR/read.log" 2>&1 || exit_code=$?
 
   _phase_summary "read" "$exit_code"
+
+  # Auto-register in program_state.json (unless program mode handles it)
+  if [[ "${_IN_PROGRAM_MODE:-}" != "true" ]] && (( exit_code == 0 )); then
+    register_experiment "$spec_file"
+  fi
 }
 
 run_log() {
@@ -826,6 +831,54 @@ with open('$PROGRAM_STATE_FILE', 'w') as f:
 "
 }
 
+register_experiment() {
+  # Register a completed experiment in program_state.json.
+  # Called automatically after run_read (unless program mode handles it).
+  # Idempotent: skips if the spec is already in cycle_log.
+  local spec_file="$1"
+  init_program_state
+
+  local results_path
+  results_path="$(results_dir_for_spec "$spec_file")"
+
+  # Extract hypothesis line as the "question" — fall back to spec basename
+  local question
+  question=$(grep -m1 '^## Hypothesis' "$spec_file" 2>/dev/null | sed 's/^## Hypothesis[[:space:]]*//' || true)
+  if [[ -z "$question" || "$question" == "##"* ]]; then
+    question=$(basename "$spec_file" .md)
+  fi
+
+  local verdict
+  verdict=$(extract_verdict "$results_path/analysis.md")
+
+  local gpu_hours
+  gpu_hours=$(extract_gpu_hours "$results_path/metrics.json")
+
+  # Idempotency check: skip if this spec is already recorded
+  local already_recorded
+  already_recorded=$(python3 -c "
+import json, sys
+try:
+    with open('$PROGRAM_STATE_FILE') as f:
+        state = json.load(f)
+    for entry in state.get('cycle_log', []):
+        if entry.get('spec_file') == '$spec_file':
+            print('yes')
+            sys.exit(0)
+except (FileNotFoundError, json.JSONDecodeError):
+    pass
+print('no')
+" 2>/dev/null || echo "no")
+
+  if [[ "$already_recorded" == "yes" ]]; then
+    echo -e "  ${BLUE}Already registered:${NC} $spec_file"
+    return 0
+  fi
+
+  record_cycle_result "$question" "$verdict" "$gpu_hours" "$spec_file"
+  echo -e "  ${GREEN}Registered:${NC} $spec_file → $verdict (${gpu_hours}h GPU)"
+}
+
 select_next_question() {
   # Parses QUESTIONS.md §4 for the highest-priority non-Blocked/Deferred question
   # Skips questions with >= INCONCLUSIVE_THRESHOLD consecutive INCONCLUSIVEs
@@ -998,6 +1051,7 @@ run_program() {
   echo ""
 
   init_program_state
+  export _IN_PROGRAM_MODE=true
 
   # SIGINT trap for clean interruption
   trap 'echo -e "\n${YELLOW}Program loop interrupted. State saved in $PROGRAM_STATE_FILE.${NC}"; exit 130' INT
