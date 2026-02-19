@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP MCP facade for orchestration-kit tools."""
+"""HTTP and stdio MCP facade for orchestration-kit tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ import datetime as dt
 import json
 import os
 import subprocess
+import sys
 import threading
+import urllib.parse
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -93,6 +96,11 @@ def request_timestamp_id() -> str:
     return f"rq-{ts}-{uuid.uuid4().hex[:6]}"
 
 
+def _make_run_id() -> str:
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{ts}-{uuid.uuid4().hex[:8]}"
+
+
 class MCPToolError(RuntimeError):
     pass
 
@@ -105,9 +113,13 @@ class ServerConfig:
     token: str
     max_output_bytes: int
     log_dir: Path
+    transport: str = "http"
+    dashboard_url: str = "http://127.0.0.1:7340"
+    project_root: Path | None = None
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    # --- Legacy orchestrator.* tools (backward-compatible) ---
     {
         "name": "orchestrator.run",
         "description": "Run a orchestration-kit action via tools/kit and return pointer-only paths.",
@@ -194,6 +206,110 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    # --- Kit execution tools (fire-and-forget) ---
+    {
+        "name": "kit.tdd",
+        "description": "Run full TDD cycle (red/green/refactor/ship). Returns immediately with run_id. Poll kit.status or kit.runs for completion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "spec_path": {"type": "string", "description": "Path to TDD spec, e.g. .kit/docs/feature.md"},
+            },
+            "required": ["spec_path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.research_cycle",
+        "description": "Run research experiment cycle (frame/run/read/log) from a spec. Returns immediately with run_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "spec_path": {"type": "string", "description": "Path to experiment spec, e.g. .kit/experiments/exp-001.md"},
+            },
+            "required": ["spec_path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.research_full",
+        "description": "Run full research cycle including survey (survey/frame/run/read/log). Returns immediately with run_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Research question to investigate"},
+                "spec_path": {"type": "string", "description": "Path to experiment spec"},
+            },
+            "required": ["question", "spec_path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.research_program",
+        "description": "Run auto-advancing research program (picks next question from QUESTIONS.md). Returns immediately with run_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.math",
+        "description": "Run full math cycle. Returns immediately with run_id. Poll kit.status or kit.runs for completion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "spec_path": {"type": "string", "description": "Path to math spec, e.g. .kit/specs/construction.md"},
+            },
+            "required": ["spec_path"],
+            "additionalProperties": False,
+        },
+    },
+    # --- Dashboard query tools (synchronous) ---
+    {
+        "name": "kit.status",
+        "description": "Get dashboard summary: total/running/ok/failed run counts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.runs",
+        "description": "List runs with optional filters (status, kit, phase, limit).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["ok", "failed", "running"], "description": "Filter by run status"},
+                "kit": {"type": "string", "enum": ["tdd", "research", "math"], "description": "Filter by kit"},
+                "phase": {"type": "string", "description": "Filter by phase name"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Max runs to return (default 50)"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.capsule",
+        "description": "Get capsule preview for a run (30-line failure summary). Use after kit.runs shows a failure.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run ID to get capsule for"},
+            },
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.research_status",
+        "description": "Get research program status: experiments, questions, and program_state.json overview.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -202,6 +318,8 @@ class MasterKitFacade:
         self.config = config
         self.root = config.root
         self._lock = threading.Lock()
+        self._background: dict[str, subprocess.Popen[bytes]] = {}
+        self._dashboard_ensured = False
 
     def _tool_path(self, name: str) -> Path:
         return self.root / "tools" / name
@@ -215,6 +333,8 @@ class MasterKitFacade:
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["ORCHESTRATION_KIT_ROOT"] = str(self.root)
+        if self.config.project_root:
+            env["PROJECT_ROOT"] = str(self.config.project_root)
         if extra_env:
             env.update(extra_env)
 
@@ -227,6 +347,95 @@ class MasterKitFacade:
             check=False,
             timeout=timeout_seconds,
         )
+
+    # --- Dashboard helpers ---
+
+    def _ensure_dashboard(self) -> None:
+        if self._dashboard_ensured:
+            return
+        try:
+            self._run_cmd(
+                [str(self._tool_path("dashboard")), "ensure-service", "--wait-seconds", "3"],
+                timeout_seconds=15,
+            )
+        except Exception:
+            pass  # best effort
+        self._dashboard_ensured = True
+
+    def _dashboard_get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        qs = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v is not None})
+        url = f"{self.config.dashboard_url}{path}{'?' + qs if qs else ''}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    # --- Fire-and-forget background launcher ---
+
+    def _launch_background(self, kit: str, action: str, args: list[str]) -> dict[str, Any]:
+        run_id = _make_run_id()
+        cmd = [str(self._tool_path("kit")), "--json", kit, action, *args, "--run-id", run_id]
+        env = os.environ.copy()
+        env["ORCHESTRATION_KIT_ROOT"] = str(self.root)
+        if self.config.project_root:
+            env["PROJECT_ROOT"] = str(self.config.project_root)
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(self.root),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._background[run_id] = proc
+        return {"run_id": run_id, "status": "launched"}
+
+    # --- Kit execution tool handlers (fire-and-forget) ---
+
+    def _tool_kit_tdd(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._launch_background("tdd", "full", [require_str(payload, "spec_path")])
+
+    def _tool_kit_research_cycle(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._launch_background("research", "cycle", [require_str(payload, "spec_path")])
+
+    def _tool_kit_research_full(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._launch_background(
+            "research", "full", [require_str(payload, "question"), require_str(payload, "spec_path")]
+        )
+
+    def _tool_kit_research_program(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._launch_background("research", "program", [])
+
+    def _tool_kit_math(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._launch_background("math", "full", [require_str(payload, "spec_path")])
+
+    # --- Dashboard query tool handlers (synchronous) ---
+
+    def _tool_kit_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_dashboard()
+        return self._dashboard_get("/api/summary", {})
+
+    def _tool_kit_runs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_dashboard()
+        return self._dashboard_get("/api/runs", {
+            "status": payload.get("status"),
+            "kit": payload.get("kit"),
+            "phase": payload.get("phase"),
+            "limit": payload.get("limit", 50),
+        })
+
+    def _tool_kit_capsule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_dashboard()
+        run_id = require_str(payload, "run_id")
+        result = self._dashboard_get("/api/capsule-preview", {"run_id": run_id})
+        if isinstance(result.get("capsule"), dict) and "text" in result["capsule"]:
+            result["capsule"]["text"] = cap_text_bytes(
+                result["capsule"]["text"], self.config.max_output_bytes
+            )
+        return result
+
+    def _tool_kit_research_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._tool_run({"kit": "research", "action": "status"})
+
+    # --- Legacy orchestrator.* tool handlers ---
 
     def _tool_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         kit = require_str(payload, "kit")
@@ -465,11 +674,26 @@ class MasterKitFacade:
             "hint": "Use grep/tail modes; full log remains on disk.",
         }
 
+    # --- Dispatch ---
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")
 
+        # Execution tools — fire-and-forget, no lock needed
+        if name == "kit.tdd":
+            return self._tool_kit_tdd(arguments)
+        if name == "kit.research_cycle":
+            return self._tool_kit_research_cycle(arguments)
+        if name == "kit.research_full":
+            return self._tool_kit_research_full(arguments)
+        if name == "kit.research_program":
+            return self._tool_kit_research_program(arguments)
+        if name == "kit.math":
+            return self._tool_kit_math(arguments)
+
         with self._lock:
+            # Legacy orchestrator.* tools
             if name == "orchestrator.run":
                 return self._tool_run(arguments)
             if name == "orchestrator.request_create":
@@ -480,6 +704,15 @@ class MasterKitFacade:
                 return self._tool_run_info(arguments)
             if name == "orchestrator.query_log":
                 return self._tool_query_log(arguments)
+            # Dashboard query tools
+            if name == "kit.status":
+                return self._tool_kit_status(arguments)
+            if name == "kit.runs":
+                return self._tool_kit_runs(arguments)
+            if name == "kit.capsule":
+                return self._tool_kit_capsule(arguments)
+            if name == "kit.research_status":
+                return self._tool_kit_research_status(arguments)
 
         raise ValueError(f"unknown tool: {name}")
 
@@ -494,7 +727,7 @@ class MCPServer(ThreadingHTTPServer):
 
 
 class MCPHandler(BaseHTTPRequestHandler):
-    server_version = "orchestration-kit-mcp/0.1"
+    server_version = "orchestration-kit-mcp/0.2"
 
     @property
     def typed_server(self) -> MCPServer:
@@ -609,7 +842,7 @@ class MCPHandler(BaseHTTPRequestHandler):
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
                         "name": "orchestration-kit-mcp",
-                        "version": "0.1.0",
+                        "version": "0.2.0",
                     },
                     "capabilities": {"tools": {}},
                 },
@@ -650,6 +883,120 @@ class MCPHandler(BaseHTTPRequestHandler):
         return self._jsonrpc_error(request_id, -32601, f"method not found: {method}")
 
 
+# --- stdio transport ---
+
+
+def _stdio_result(request_id: Any, data: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": data}
+
+
+def _stdio_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _dispatch_stdio(
+    facade: MasterKitFacade,
+    config: ServerConfig,
+    method: str,
+    params: dict[str, Any],
+    request_id: Any,
+) -> dict[str, Any]:
+    """Dispatch a JSON-RPC request for stdio transport."""
+    if method == "initialize":
+        return _stdio_result(request_id, {
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {"name": "orchestration-kit-mcp", "version": "0.2.0"},
+            "capabilities": {"tools": {}},
+        })
+
+    if method == "notifications/initialized":
+        return _stdio_result(request_id, {})
+
+    if method == "tools/list":
+        return _stdio_result(request_id, {"tools": TOOL_DEFINITIONS})
+
+    if method == "tools/call":
+        name = params.get("name")
+        if not isinstance(name, str) or not name:
+            return _stdio_error(request_id, -32602, "tools/call requires name")
+        arguments = params.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return _stdio_error(request_id, -32602, "tools/call arguments must be an object")
+
+        try:
+            result = facade.call_tool(name, arguments)
+            text = cap_text_bytes(json.dumps(result, sort_keys=True), config.max_output_bytes)
+            return _stdio_result(request_id, {
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": result,
+            })
+        except MCPToolError as exc:
+            return _stdio_result(request_id, {
+                "isError": True,
+                "content": [{"type": "text", "text": cap_text_bytes(str(exc), config.max_output_bytes)}],
+            })
+        except ValueError as exc:
+            return _stdio_error(request_id, -32602, str(exc))
+        except Exception as exc:
+            return _stdio_error(request_id, -32000, f"internal error: {exc}")
+
+    if method == "ping":
+        return _stdio_result(request_id, {"ok": True, "ts": utc_now()})
+
+    return _stdio_error(request_id, -32601, f"method not found: {method}")
+
+
+def run_stdio(facade: MasterKitFacade, config: ServerConfig) -> int:
+    """Run MCP server over stdio (newline-delimited JSON-RPC on stdin/stdout)."""
+    print(
+        f"orchestration-kit mcp stdio ready root={config.root}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            body = json.loads(line)
+        except json.JSONDecodeError:
+            response = _stdio_error(None, -32700, "parse error")
+            sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+            continue
+
+        if not isinstance(body, dict):
+            response = _stdio_error(None, -32600, "invalid request")
+            sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+            continue
+
+        request_id = body.get("id")
+        method = body.get("method")
+        params = body.get("params", {})
+        if params is None:
+            params = {}
+
+        if not isinstance(method, str):
+            response = _stdio_error(request_id, -32600, "method is required")
+            sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+            continue
+
+        response = _dispatch_stdio(facade, config, method, params, request_id)
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+    return 0
+
+
+# --- Config and main ---
+
+
 def load_config(argv: list[str]) -> ServerConfig:
     parser = argparse.ArgumentParser(prog="mcp/server.py")
     parser.add_argument("--root", default=os.getenv("ORCHESTRATION_KIT_ROOT"))
@@ -658,13 +1005,18 @@ def load_config(argv: list[str]) -> ServerConfig:
     parser.add_argument("--token", default=os.getenv("ORCHESTRATION_KIT_MCP_TOKEN"))
     parser.add_argument("--max-output-bytes", type=int, default=env_int("ORCHESTRATION_KIT_MCP_MAX_OUTPUT_BYTES", 32000))
     parser.add_argument("--log-dir", default=os.getenv("ORCHESTRATION_KIT_MCP_LOG_DIR", "runs/mcp-logs"))
+    parser.add_argument(
+        "--transport",
+        default=os.getenv("ORCHESTRATION_KIT_MCP_TRANSPORT", "http"),
+        choices=["http", "stdio"],
+    )
 
     args = parser.parse_args(argv)
 
     if not args.root:
         raise SystemExit("ORCHESTRATION_KIT_ROOT is required (or --root)")
-    if not args.token:
-        raise SystemExit("ORCHESTRATION_KIT_MCP_TOKEN is required (or --token)")
+    if args.transport == "http" and not args.token:
+        raise SystemExit("ORCHESTRATION_KIT_MCP_TOKEN is required for http transport (or --token)")
 
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
@@ -677,18 +1029,32 @@ def load_config(argv: list[str]) -> ServerConfig:
 
     max_output_bytes = max(int(args.max_output_bytes), 1)
 
+    dashboard_port = env_int("ORCHESTRATION_KIT_DASHBOARD_PORT", 7340)
+    dashboard_url = f"http://127.0.0.1:{dashboard_port}"
+
+    project_root_raw = os.getenv("PROJECT_ROOT")
+    project_root = Path(project_root_raw).resolve() if project_root_raw else None
+
     return ServerConfig(
         root=root,
         host=str(args.host),
         port=int(args.port),
-        token=str(args.token),
+        token=str(args.token or ""),
         max_output_bytes=max_output_bytes,
         log_dir=log_dir,
+        transport=str(args.transport),
+        dashboard_url=dashboard_url,
+        project_root=project_root,
     )
 
 
 def main(argv: list[str]) -> int:
     config = load_config(argv)
+
+    if config.transport == "stdio":
+        facade = MasterKitFacade(config)
+        return run_stdio(facade, config)
+
     server = MCPServer((config.host, config.port), config)
 
     print(
@@ -708,4 +1074,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(os.sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:]))
