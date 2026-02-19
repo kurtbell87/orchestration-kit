@@ -83,9 +83,13 @@ If an abort criterion is triggered:
 
 **IMPORTANT: Time-based abort thresholds.** If a spec's per-run time abort threshold is clearly unrealistic for the actual data size (e.g., "abort if fit takes >60s" but the dataset is much larger than the spec assumed), **ignore that specific abort criterion** and note the discrepancy in `metrics.json` notes. Killing and restarting due to unrealistic time estimates wastes far more time than letting the run finish. Apply total wall-clock budgets loosely — complete the current phase and report partial results rather than hard-killing mid-run.
 
-## Cloud Execution for Heavy Workloads
+## Cloud Execution
 
-If a **Compute Advisory** appears in the Context section, the experiment's compute profile exceeds local machine thresholds. Use cloud execution for the full protocol:
+The Context section may contain one of three cloud-related advisories. Follow the matching protocol:
+
+### Case 1: `## Compute Advisory` or `## Compute Advisory (Cloud Preferred)`
+
+The experiment should run on cloud. Follow the full cloud protocol:
 
 1. **Implement and test locally first.** Write the experiment code, run sanity checks, reproduce baseline on a small subset.
 2. **Run the MVE locally** if it's quick enough (minutes, not hours).
@@ -113,7 +117,20 @@ The remote instance runs your command in a Docker container with Python 3.11. De
 - `--max-hours N`: Auto-terminate safety (default: 12h)
 - `--output-dir`: Where to download results locally
 
-If no Compute Advisory is present, run everything locally as normal.
+If the advisory says "Cloud Preferred" (preference override), local execution is a valid fallback if cloud is unavailable — the job will still complete, just slower.
+
+### Case 2: `## Cloud Availability Note`
+
+Run locally as the primary path. Cloud is configured and available as a fallback if:
+- Local execution is unexpectedly slow (e.g., >3x estimated wall time)
+- Local machine runs out of memory or disk
+- You need to free local resources for interactive work
+
+Use the `tools/cloud-run` command shown in the note to offload if needed.
+
+### Case 3: No cloud advisory present
+
+No cloud compute is configured. Run everything locally.
 
 ## What NOT To Do
 - Do NOT add metrics that aren't in the spec. If you discover something interesting, note it in `metrics.json` `notes` field, but it does not become a metric.

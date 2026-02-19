@@ -134,6 +134,25 @@ gpu_type: none               # none, any, A100, H100
 estimated_wall_hours: [N]    # total estimated wall time INCLUDING data processing
 ```
 
+### Wall-Time Estimation Guidance
+
+Use these rules of thumb when filling in `estimated_wall_hours`:
+
+| Workload type | Local estimate (~12 cores) | Cloud estimate (16-64 vCPU) |
+|---------------|---------------------------|----------------------------|
+| **XGBoost** (tabular, <1M rows) | ~1-5 min per fit | ~0.5-2 min per fit |
+| **XGBoost** (tabular, >1M rows) | ~5-30 min per fit | ~2-10 min per fit |
+| **PyTorch** (small CNN/MLP, CPU) | ~2-10 min per epoch | ~1-5 min per epoch |
+| **PyTorch** (GPU required) | N/A locally | Use GPU estimate from model docs |
+| **polars/pandas** (data processing) | ~1-5 min per 1M rows | ~0.5-2 min per 1M rows |
+| **sklearn** (RandomForest, <1M rows) | ~1-10 min per fit | ~0.5-5 min per fit |
+
+**Formula:** `estimated_wall_hours = (per_fit_time × sequential_fits + data_processing_time) / 60`
+
+- Include data loading, feature export, and post-processing — not just training.
+- For parallelizable workloads, estimate the *sequential* wall time (what one machine sees).
+- Do NOT inflate `estimated_wall_hours` to force cloud execution — report honestly. The cloud preference mechanism handles routing; the estimate should reflect actual expected duration.
+
 ## Abort Criteria
 [When to stop early — saves resources on clearly-failing experiments.
 - Loss diverges (NaN or > [threshold]) for [N] consecutive steps
