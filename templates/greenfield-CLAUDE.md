@@ -64,6 +64,23 @@ Open `http://127.0.0.1:7340` to explore runs across projects and filter by proje
 - `.kit/handoffs/completed/` — Resolved research handoffs
 - `.kit/scripts/` — Utility scripts (symlinked from orchestration-kit)
 
+## Git Worktree Setup
+
+When working in a git worktree, `orchestration-kit/` will be empty. Use `tools/worktree-init`:
+
+```bash
+git worktree add ../project-slug -b feat/my-feature main
+cd ../project-slug
+orchestration-kit/tools/worktree-init
+source .orchestration-kit.env
+```
+
+## Process Visibility (MCP)
+
+- **`kit.active`** — List all background processes launched by the MCP server (run_id, pid, status, exit_code).
+- **`kit.kill`** — Terminate a background process by run_id (SIGTERM/SIGKILL).
+- **`kit.runs`** — Now shows runs immediately at launch (not just after completion). Includes `is_orphaned` flag for dead processes.
+
 ## Don't
 
 - Don't `cd` into `orchestration-kit/` and run kit scripts from there — run from project root.

@@ -4,6 +4,8 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
 import os
+import signal
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -451,6 +453,366 @@ class DashboardTests(unittest.TestCase):
                     os.environ.pop("ORCHESTRATION_KIT_DASHBOARD_HOME", None)
                 else:
                     os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = old_home
+
+
+    def test_upsert_single_run_at_start(self) -> None:
+        """upsert_single_run makes a running run visible immediately."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dashboard_home = root / "dashboard-home"
+            old_home = os.environ.get("ORCHESTRATION_KIT_DASHBOARD_HOME")
+            os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+            try:
+                mk1, pr1, _ = self._write_fake_project(root, "upsert", ts="2026-02-19T00:00:00Z")
+                record = dashboard_tool.upsert_registry_project(
+                    orchestration_kit_root=mk1, project_root=pr1, label="upsert"
+                )
+
+                # Write a run that has only run_started + phase_started (no run_finished).
+                run_id = "upsert-running-run"
+                run_root = mk1 / "runs" / run_id
+                run_root.mkdir(parents=True, exist_ok=True)
+                events = [
+                    {
+                        "ts": "2026-02-19T00:01:00Z",
+                        "event": "run_started",
+                        "run_id": run_id,
+                        "parent_run_id": None,
+                        "kit": "research",
+                        "phase": "cycle",
+                        "host": socket.gethostname(),
+                        "pid": os.getpid(),
+                    },
+                    {
+                        "ts": "2026-02-19T00:01:01Z",
+                        "event": "phase_started",
+                        "run_id": run_id,
+                        "kit": "research",
+                        "phase": "cycle",
+                    },
+                ]
+                with (run_root / "events.jsonl").open("w", encoding="utf-8") as fh:
+                    for event in events:
+                        json.dump(event, fh, sort_keys=True)
+                        fh.write("\n")
+
+                # Upsert the single run.
+                result = dashboard_tool.upsert_single_run(
+                    project_id=str(record["project_id"]),
+                    orchestration_kit_root=str(mk1),
+                    project_root=str(pr1),
+                    run_id=run_id,
+                    run_root=run_root,
+                )
+                self.assertEqual(result["run_id"], run_id)
+                self.assertEqual(result["status"], "running")
+
+                # Verify it's in the DB.
+                db_file = Path(result["db_path"])
+                conn = sqlite3.connect(str(db_file))
+                conn.row_factory = sqlite3.Row
+                try:
+                    row = conn.execute(
+                        "SELECT status, kit, phase FROM runs WHERE run_id = ?", (run_id,)
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row["status"], "running")
+                    self.assertEqual(row["kit"], "research")
+                    self.assertEqual(row["phase"], "cycle")
+                finally:
+                    conn.close()
+            finally:
+                if old_home is None:
+                    os.environ.pop("ORCHESTRATION_KIT_DASHBOARD_HOME", None)
+                else:
+                    os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = old_home
+
+    def test_upsert_single_run_completion_updates(self) -> None:
+        """upsert_single_run updates a running run to ok/failed on completion."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dashboard_home = root / "dashboard-home"
+            old_home = os.environ.get("ORCHESTRATION_KIT_DASHBOARD_HOME")
+            os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+            try:
+                mk1, pr1, _ = self._write_fake_project(root, "upsert2", ts="2026-02-19T00:00:00Z")
+                record = dashboard_tool.upsert_registry_project(
+                    orchestration_kit_root=mk1, project_root=pr1, label="upsert2"
+                )
+
+                run_id = "upsert-complete-run"
+                run_root = mk1 / "runs" / run_id
+                run_root.mkdir(parents=True, exist_ok=True)
+
+                # First: write running events and upsert.
+                events_running = [
+                    {"ts": "2026-02-19T00:02:00Z", "event": "run_started", "run_id": run_id, "kit": "tdd", "phase": "full"},
+                    {"ts": "2026-02-19T00:02:01Z", "event": "phase_started", "run_id": run_id, "kit": "tdd", "phase": "full"},
+                ]
+                with (run_root / "events.jsonl").open("w", encoding="utf-8") as fh:
+                    for event in events_running:
+                        json.dump(event, fh, sort_keys=True)
+                        fh.write("\n")
+
+                dashboard_tool.upsert_single_run(
+                    project_id=str(record["project_id"]),
+                    orchestration_kit_root=str(mk1),
+                    project_root=str(pr1),
+                    run_id=run_id,
+                    run_root=run_root,
+                )
+
+                # Second: append completion events and upsert again.
+                events_done = [
+                    {"ts": "2026-02-19T00:05:00Z", "event": "run_finished", "run_id": run_id, "kit": "tdd", "phase": "full", "exit_code": 0},
+                ]
+                with (run_root / "events.jsonl").open("a", encoding="utf-8") as fh:
+                    for event in events_done:
+                        json.dump(event, fh, sort_keys=True)
+                        fh.write("\n")
+
+                result = dashboard_tool.upsert_single_run(
+                    project_id=str(record["project_id"]),
+                    orchestration_kit_root=str(mk1),
+                    project_root=str(pr1),
+                    run_id=run_id,
+                    run_root=run_root,
+                )
+                self.assertEqual(result["status"], "ok")
+
+                # Verify DB shows ok now.
+                db_file = Path(result["db_path"])
+                conn = sqlite3.connect(str(db_file))
+                conn.row_factory = sqlite3.Row
+                try:
+                    row = conn.execute(
+                        "SELECT status, exit_code FROM runs WHERE run_id = ?", (run_id,)
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row["status"], "ok")
+                    self.assertEqual(row["exit_code"], 0)
+                finally:
+                    conn.close()
+            finally:
+                if old_home is None:
+                    os.environ.pop("ORCHESTRATION_KIT_DASHBOARD_HOME", None)
+                else:
+                    os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = old_home
+
+    def test_is_orphaned_for_dead_pid(self) -> None:
+        """list_runs_payload marks runs with dead PIDs as is_orphaned=True."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dashboard_home = root / "dashboard-home"
+            old_home = os.environ.get("ORCHESTRATION_KIT_DASHBOARD_HOME")
+            os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+            try:
+                mk1, pr1, _ = self._write_fake_project(root, "orphan", ts="2026-02-19T00:00:00Z")
+                record = dashboard_tool.upsert_registry_project(
+                    orchestration_kit_root=mk1, project_root=pr1, label="orphan"
+                )
+
+                # Create a "running" run with a PID that doesn't exist.
+                run_id = "orphan-test-run"
+                run_root = mk1 / "runs" / run_id
+                run_root.mkdir(parents=True, exist_ok=True)
+                # Use a PID that's almost certainly dead (max PID - 1).
+                dead_pid = 2147483646
+                events = [
+                    {
+                        "ts": "2026-02-19T00:03:00Z",
+                        "event": "run_started",
+                        "run_id": run_id,
+                        "kit": "research",
+                        "phase": "frame",
+                        "host": socket.gethostname(),
+                        "pid": dead_pid,
+                    },
+                    {
+                        "ts": "2026-02-19T00:03:01Z",
+                        "event": "phase_started",
+                        "run_id": run_id,
+                        "kit": "research",
+                        "phase": "frame",
+                    },
+                ]
+                with (run_root / "events.jsonl").open("w", encoding="utf-8") as fh:
+                    for event in events:
+                        json.dump(event, fh, sort_keys=True)
+                        fh.write("\n")
+
+                dashboard_tool.upsert_single_run(
+                    project_id=str(record["project_id"]),
+                    orchestration_kit_root=str(mk1),
+                    project_root=str(pr1),
+                    run_id=run_id,
+                    run_root=run_root,
+                )
+
+                payload = dashboard_tool.list_runs_payload({"project_id": record["project_id"], "status": "running"})
+                runs = payload.get("runs", [])
+                orphan_runs = [r for r in runs if r["run_id"] == run_id]
+                self.assertEqual(len(orphan_runs), 1)
+                self.assertTrue(orphan_runs[0]["is_orphaned"])
+            finally:
+                if old_home is None:
+                    os.environ.pop("ORCHESTRATION_KIT_DASHBOARD_HOME", None)
+                else:
+                    os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = old_home
+
+    def test_is_orphaned_false_for_live_pid(self) -> None:
+        """list_runs_payload marks runs with live PIDs as is_orphaned=False."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dashboard_home = root / "dashboard-home"
+            old_home = os.environ.get("ORCHESTRATION_KIT_DASHBOARD_HOME")
+            os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = str(dashboard_home)
+            try:
+                mk1, pr1, _ = self._write_fake_project(root, "alive", ts="2026-02-19T00:00:00Z")
+                record = dashboard_tool.upsert_registry_project(
+                    orchestration_kit_root=mk1, project_root=pr1, label="alive"
+                )
+
+                # Create a "running" run with our own PID (definitely alive).
+                run_id = "alive-test-run"
+                run_root = mk1 / "runs" / run_id
+                run_root.mkdir(parents=True, exist_ok=True)
+                events = [
+                    {
+                        "ts": "2026-02-19T00:04:00Z",
+                        "event": "run_started",
+                        "run_id": run_id,
+                        "kit": "tdd",
+                        "phase": "full",
+                        "host": socket.gethostname(),
+                        "pid": os.getpid(),
+                    },
+                    {
+                        "ts": "2026-02-19T00:04:01Z",
+                        "event": "phase_started",
+                        "run_id": run_id,
+                        "kit": "tdd",
+                        "phase": "full",
+                    },
+                ]
+                with (run_root / "events.jsonl").open("w", encoding="utf-8") as fh:
+                    for event in events:
+                        json.dump(event, fh, sort_keys=True)
+                        fh.write("\n")
+
+                dashboard_tool.upsert_single_run(
+                    project_id=str(record["project_id"]),
+                    orchestration_kit_root=str(mk1),
+                    project_root=str(pr1),
+                    run_id=run_id,
+                    run_root=run_root,
+                )
+
+                payload = dashboard_tool.list_runs_payload({"project_id": record["project_id"], "status": "running"})
+                runs = payload.get("runs", [])
+                alive_runs = [r for r in runs if r["run_id"] == run_id]
+                self.assertEqual(len(alive_runs), 1)
+                self.assertFalse(alive_runs[0]["is_orphaned"])
+            finally:
+                if old_home is None:
+                    os.environ.pop("ORCHESTRATION_KIT_DASHBOARD_HOME", None)
+                else:
+                    os.environ["ORCHESTRATION_KIT_DASHBOARD_HOME"] = old_home
+
+
+class MCPActiveKillTests(unittest.TestCase):
+    """Test kit.active and kit.kill tool handlers in-process (no HTTP)."""
+
+    def _make_facade(self) -> "Any":
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from mcp.server import MasterKitFacade, ServerConfig
+
+        config = ServerConfig(
+            root=ROOT,
+            host="127.0.0.1",
+            port=0,
+            token="test",
+            max_output_bytes=32000,
+            log_dir=ROOT / "runs" / "mcp-logs",
+        )
+        return MasterKitFacade(config)
+
+    def test_kit_active_empty(self) -> None:
+        facade = self._make_facade()
+        result = facade.call_tool("kit.active", {})
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["processes"], [])
+
+    def test_kit_active_shows_launched_process(self) -> None:
+        facade = self._make_facade()
+        # Launch a dummy process that sleeps
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        facade._background["test-run-001"] = proc
+        try:
+            result = facade.call_tool("kit.active", {})
+            self.assertEqual(result["count"], 1)
+            entry = result["processes"][0]
+            self.assertEqual(entry["run_id"], "test-run-001")
+            self.assertEqual(entry["pid"], proc.pid)
+            self.assertEqual(entry["status"], "running")
+            self.assertIsNone(entry["exit_code"])
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    def test_kit_active_shows_finished_process(self) -> None:
+        facade = self._make_facade()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        facade._background["test-run-done"] = proc
+
+        result = facade.call_tool("kit.active", {})
+        self.assertEqual(result["count"], 1)
+        entry = result["processes"][0]
+        self.assertEqual(entry["run_id"], "test-run-done")
+        self.assertEqual(entry["status"], "ok")
+        self.assertEqual(entry["exit_code"], 0)
+
+    def test_kit_kill_terminates_process(self) -> None:
+        facade = self._make_facade()
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        facade._background["test-kill-001"] = proc
+        try:
+            result = facade.call_tool("kit.kill", {"run_id": "test-kill-001"})
+            self.assertEqual(result["result"], "signal_sent")
+            self.assertEqual(result["signal"], "SIGTERM")
+            self.assertEqual(result["pid"], proc.pid)
+            # Wait for it to actually die
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait()
+            raise
+
+    def test_kit_kill_already_finished(self) -> None:
+        facade = self._make_facade()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        facade._background["test-kill-done"] = proc
+
+        result = facade.call_tool("kit.kill", {"run_id": "test-kill-done"})
+        self.assertEqual(result["result"], "already_finished")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_kit_kill_unknown_run_id(self) -> None:
+        facade = self._make_facade()
+        from mcp.server import MCPToolError
+        with self.assertRaises(MCPToolError):
+            facade.call_tool("kit.kill", {"run_id": "nonexistent"})
 
 
 if __name__ == "__main__":

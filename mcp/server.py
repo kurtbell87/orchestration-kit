@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -310,6 +311,33 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    # --- Process visibility tools ---
+    {
+        "name": "kit.active",
+        "description": "List all background processes launched by this MCP server. Returns run_id, pid, status (running/ok/failed), and exit_code for each.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kit.kill",
+        "description": "Terminate a background process launched by this MCP server. Only operates on processes tracked in the active list (cannot kill arbitrary PIDs).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run ID of the process to terminate"},
+                "signal": {
+                    "type": "string",
+                    "enum": ["SIGTERM", "SIGKILL"],
+                    "description": "Signal to send (default: SIGTERM)",
+                },
+            },
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -434,6 +462,70 @@ class MasterKitFacade:
 
     def _tool_kit_research_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._tool_run({"kit": "research", "action": "status"})
+
+    # --- Process visibility tool handlers ---
+
+    def _tool_kit_active(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return status of all background processes launched by this server."""
+        processes: list[dict[str, Any]] = []
+        # Read-only snapshot of _background; CPython GIL makes dict iteration safe.
+        for run_id, proc in list(self._background.items()):
+            rc = proc.poll()
+            if rc is None:
+                status = "running"
+                exit_code = None
+            elif rc == 0:
+                status = "ok"
+                exit_code = 0
+            else:
+                status = "failed"
+                exit_code = rc
+            processes.append({
+                "run_id": run_id,
+                "pid": proc.pid,
+                "status": status,
+                "exit_code": exit_code,
+            })
+        return {"processes": processes, "count": len(processes)}
+
+    def _tool_kit_kill(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Terminate a background process by run_id."""
+        run_id = require_str(payload, "run_id")
+        sig_name = payload.get("signal", "SIGTERM")
+        if sig_name not in {"SIGTERM", "SIGKILL"}:
+            raise ValueError("signal must be SIGTERM or SIGKILL")
+
+        proc = self._background.get(run_id)
+        if proc is None:
+            raise MCPToolError(f"run_id not found in active processes: {run_id}")
+
+        sig = signal.SIGTERM if sig_name == "SIGTERM" else signal.SIGKILL
+
+        rc = proc.poll()
+        if rc is not None:
+            return {
+                "run_id": run_id,
+                "result": "already_finished",
+                "exit_code": rc,
+            }
+
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            return {
+                "run_id": run_id,
+                "result": "already_finished",
+                "exit_code": proc.poll(),
+            }
+        except OSError as exc:
+            raise MCPToolError(f"failed to send {sig_name} to {run_id}: {exc}") from exc
+
+        return {
+            "run_id": run_id,
+            "result": "signal_sent",
+            "signal": sig_name,
+            "pid": proc.pid,
+        }
 
     # --- Legacy orchestrator.* tool handlers ---
 
@@ -691,6 +783,12 @@ class MasterKitFacade:
             return self._tool_kit_research_program(arguments)
         if name == "kit.math":
             return self._tool_kit_math(arguments)
+
+        # Process visibility tools — no lock needed (read-only or pid-safe)
+        if name == "kit.active":
+            return self._tool_kit_active(arguments)
+        if name == "kit.kill":
+            return self._tool_kit_kill(arguments)
 
         with self._lock:
             # Legacy orchestrator.* tools

@@ -37,6 +37,7 @@ from .indexing import (
     index_projects,
     prepare_projects,
     maybe_seed_registry,
+    upsert_single_run,
 )
 from .payloads import (
     load_dashboard_rows,
@@ -94,6 +95,7 @@ __all__ = [
     "index_projects",
     "prepare_projects",
     "maybe_seed_registry",
+    "upsert_single_run",
     "load_dashboard_rows",
     "load_one_row",
     "summary_payload",

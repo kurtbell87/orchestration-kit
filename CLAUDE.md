@@ -140,9 +140,35 @@ source .orchestration-kit.env
 tools/mcp-serve
 ```
 
-Exposes: `orchestrator.run`, `orchestrator.request_create`, `orchestrator.pump`, `orchestrator.run_info`, `orchestrator.query_log`
+Exposes: `orchestrator.run`, `orchestrator.request_create`, `orchestrator.pump`, `orchestrator.run_info`, `orchestrator.query_log`, `kit.tdd`, `kit.research_cycle`, `kit.research_full`, `kit.research_program`, `kit.math`, `kit.status`, `kit.runs`, `kit.capsule`, `kit.research_status`, `kit.active`, `kit.kill`
+
+### Process Visibility
+
+- **`kit.active`** — List all background processes launched by the MCP server. Returns `run_id`, `pid`, `status` (running/ok/failed), and `exit_code` for each. Use this for immediate visibility without dashboard dependency.
+- **`kit.kill`** — Terminate a background process by `run_id`. Takes optional `signal` (SIGTERM default, SIGKILL option). Only operates on processes tracked by `kit.active` (cannot kill arbitrary PIDs). Returns `already_finished` if process exited, `signal_sent` on success.
+
+### Run Visibility at Launch
+
+Runs are now upserted into the dashboard SQLite DB at launch time (not just at completion). This means `kit.runs` with `status="running"` will show runs immediately after they start, not only after they finish.
+
+### Orphan Detection
+
+`kit.runs` responses include an `is_orphaned` boolean for running runs on the local host. If the PID recorded at launch is no longer alive, `is_orphaned=true`. This detects runs whose process was killed without clean shutdown.
 
 See `docs/MCP_SETUP.md` for client configuration.
+
+## Git Worktree Setup
+
+When working in a git worktree (created via `git worktree add`), the `orchestration-kit/` directory will be empty because it's tracked as a gitlink. Use `tools/worktree-init` to bootstrap:
+
+```bash
+git worktree add ../project-slug -b feat/my-feature main
+cd ../project-slug
+orchestration-kit/tools/worktree-init   # or: <path-to-main>/orchestration-kit/tools/worktree-init
+source .orchestration-kit.env
+```
+
+This replaces the empty `orchestration-kit/` with a symlink to the main checkout's copy, runs the installer, and patches `.orchestration-kit.env` with the correct `PROJECT_ROOT`.
 
 ## Validation
 

@@ -7,6 +7,8 @@ import filecmp
 import json
 import os
 import re
+import signal
+import socket
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -204,8 +206,9 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
         tuple([*params, limit, offset]),
     )
 
-    # Post-process: add duration_seconds and is_stale
+    # Post-process: add duration_seconds, is_stale, and is_orphaned
     now = dt.datetime.now(dt.timezone.utc)
+    local_hostname = socket.gethostname()
     for row in rows:
         started = row.get("started_at")
         finished = row.get("finished_at")
@@ -222,6 +225,17 @@ def list_runs_payload(query: dict[str, str]) -> dict[str, Any]:
                 pass
         row["duration_seconds"] = duration
         row["is_stale"] = row.get("status") == "running" and duration is not None and duration > 1800
+
+        # Orphan detection: for local "running" runs, check if the PID is still alive.
+        is_orphaned = False
+        if row.get("status") == "running" and row.get("pid") and row.get("host") == local_hostname:
+            try:
+                os.kill(int(row["pid"]), 0)
+            except ProcessLookupError:
+                is_orphaned = True
+            except (PermissionError, OSError, TypeError, ValueError):
+                pass  # process exists but we can't signal it, or bad pid
+        row["is_orphaned"] = is_orphaned
 
     has_more = len(rows) == limit
     return {"runs": rows, "limit": limit, "offset": offset, "has_more": has_more}

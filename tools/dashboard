@@ -57,6 +57,7 @@ from dashboard import (  # noqa: E402, F401
     index_projects,
     prepare_projects,
     maybe_seed_registry,
+    upsert_single_run,
     load_dashboard_rows,
     load_one_row,
     summary_payload,

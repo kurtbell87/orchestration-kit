@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# worktree-init — Bootstrap orchestration-kit in a git worktree.
+#
+# Problem: orchestration-kit is tracked as a gitlink (mode 160000) without
+# .gitmodules, so `git worktree add` creates an empty directory. All .kit/
+# symlinks dangle, and the kit scripts are missing.
+#
+# This script:
+#   1. Verifies CWD is a git worktree (not the main checkout)
+#   2. Finds the main checkout via `git worktree list`
+#   3. Replaces the empty orchestration-kit/ dir with a symlink to the main
+#      checkout's copy
+#   4. Runs install.sh --skip-smoke to create .kit/ symlinks and state files
+#   5. Patches .orchestration-kit.env with the correct PROJECT_ROOT
+#
+# Usage:
+#   git worktree add ../project-slug -b feat/my-feature main
+#   cd ../project-slug
+#   orchestration-kit/tools/worktree-init
+#
+# Or if orchestration-kit/ is empty (gitlink):
+#   <path-to-main-checkout>/orchestration-kit/tools/worktree-init
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKTREE_ROOT="$(pwd)"
+
+# ── Step 1: Verify this is a worktree ──────────────────────────────────────
+
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo "[worktree-init] ERROR: not inside a git repository" >&2
+  exit 1
+fi
+
+GIT_TOPLEVEL="$(git rev-parse --show-toplevel)"
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
+
+# A worktree has a .git file (not directory) pointing to the shared .git/worktrees/<name>
+if [[ -d "${GIT_TOPLEVEL}/.git" && ! -f "${GIT_TOPLEVEL}/.git" ]]; then
+  echo "[worktree-init] WARNING: this looks like the main checkout, not a worktree."
+  echo "  Use install.sh instead: ./orchestration-kit/install.sh"
+  echo "  Continuing anyway..."
+fi
+
+echo "[worktree-init] worktree root: $WORKTREE_ROOT"
+
+# ── Step 2: Find main checkout ─────────────────────────────────────────────
+
+MAIN_CHECKOUT=""
+while IFS= read -r line; do
+  # First worktree entry is always the main checkout
+  if [[ -z "$MAIN_CHECKOUT" && "$line" == "worktree "* ]]; then
+    MAIN_CHECKOUT="${line#worktree }"
+  fi
+done < <(git worktree list --porcelain)
+
+if [[ -z "$MAIN_CHECKOUT" ]]; then
+  echo "[worktree-init] ERROR: could not determine main checkout from 'git worktree list'" >&2
+  exit 1
+fi
+
+echo "[worktree-init] main checkout: $MAIN_CHECKOUT"
+
+MAIN_OK_DIR="${MAIN_CHECKOUT}/orchestration-kit"
+if [[ ! -d "$MAIN_OK_DIR" ]]; then
+  echo "[worktree-init] ERROR: orchestration-kit/ not found in main checkout: $MAIN_OK_DIR" >&2
+  exit 1
+fi
+
+# ── Step 3: Replace empty orchestration-kit/ with symlink ──────────────────
+
+WORKTREE_OK_DIR="${WORKTREE_ROOT}/orchestration-kit"
+
+if [[ -L "$WORKTREE_OK_DIR" ]]; then
+  echo "[worktree-init] orchestration-kit/ is already a symlink, skipping"
+elif [[ -d "$WORKTREE_OK_DIR" ]]; then
+  # Check if it's empty or near-empty (gitlink creates an empty dir)
+  file_count=$(find "$WORKTREE_OK_DIR" -maxdepth 1 -not -name '.' | wc -l | tr -d ' ')
+  if [[ "$file_count" -gt 2 ]]; then
+    echo "[worktree-init] ERROR: orchestration-kit/ has $file_count entries — doesn't look empty." >&2
+    echo "  If this is intentional, remove it first: rm -rf orchestration-kit/" >&2
+    exit 1
+  fi
+  echo "[worktree-init] removing empty orchestration-kit/ directory"
+  rm -rf "$WORKTREE_OK_DIR"
+  ln -s "$MAIN_OK_DIR" "$WORKTREE_OK_DIR"
+  echo "[worktree-init] symlinked orchestration-kit/ → $MAIN_OK_DIR"
+else
+  ln -s "$MAIN_OK_DIR" "$WORKTREE_OK_DIR"
+  echo "[worktree-init] symlinked orchestration-kit/ → $MAIN_OK_DIR"
+fi
+
+# ── Step 4: Run install.sh ─────────────────────────────────────────────────
+
+echo "[worktree-init] running install.sh --skip-smoke"
+echo "n" | "${WORKTREE_OK_DIR}/install.sh" --skip-smoke --no-mcp
+
+# ── Step 5: Patch .orchestration-kit.env ───────────────────────────────────
+
+ENV_FILE="${WORKTREE_ROOT}/.orchestration-kit.env"
+MAIN_ENV_FILE="${MAIN_CHECKOUT}/.orchestration-kit.env"
+
+if [[ -f "$MAIN_ENV_FILE" ]]; then
+  # Copy from main checkout and patch PROJECT_ROOT
+  cp "$MAIN_ENV_FILE" "$ENV_FILE"
+  # Replace PROJECT_ROOT with the worktree path
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "s|^export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${WORKTREE_ROOT}\"|" "$ENV_FILE"
+  else
+    sed -i "s|^export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${WORKTREE_ROOT}\"|" "$ENV_FILE"
+  fi
+  chmod 600 "$ENV_FILE"
+  echo "[worktree-init] patched .orchestration-kit.env with PROJECT_ROOT=$WORKTREE_ROOT"
+elif [[ -f "$ENV_FILE" ]]; then
+  # install.sh created one; patch PROJECT_ROOT
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' "s|^export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${WORKTREE_ROOT}\"|" "$ENV_FILE"
+  else
+    sed -i "s|^export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${WORKTREE_ROOT}\"|" "$ENV_FILE"
+  fi
+  echo "[worktree-init] patched existing .orchestration-kit.env"
+fi
+
+echo ""
+echo "[worktree-init] ready!"
+echo "  1. source .orchestration-kit.env"
+echo "  2. Start working on your branch"

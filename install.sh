@@ -83,6 +83,24 @@ fi
 
 echo "[install] mode: $MODE"
 
+# ── Detect git worktree (non-blocking warning) ───────────────────────────────
+
+if [[ "$MODE" == "greenfield" ]]; then
+  if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree &>/dev/null; then
+    _git_dir="$PROJECT_ROOT/.git"
+    if [[ -f "$_git_dir" ]]; then
+      echo ""
+      echo "[install] WARNING: This appears to be a git worktree."
+      echo "  For worktrees, 'tools/worktree-init' handles orchestration-kit/"
+      echo "  symlink setup automatically. Consider using it instead:"
+      echo "    orchestration-kit/tools/worktree-init"
+      echo ""
+      echo "  Continuing with standard greenfield install..."
+      echo ""
+    fi
+  fi
+fi
+
 # ── Helper: create relative symlink (skip if target already exists) ──────────
 
 link_rel() {

@@ -221,6 +221,35 @@ def dashboard_index_project(project_id: str | None) -> None:
         )
 
 
+def dashboard_upsert_run(
+    project_id: str | None,
+    run_id: str,
+    run_root: Path,
+) -> None:
+    """Upsert a single run into the dashboard DB (~1ms, replaces full re-index)."""
+    if not env_enabled("ORCHESTRATION_KIT_DASHBOARD_AUTO_INDEX", default=True):
+        return
+    if not isinstance(project_id, str) or not project_id:
+        return
+
+    try:
+        # Import inline to avoid hard dependency on dashboard package at module level.
+        sys.path.insert(0, str(REPO_ROOT))
+        from dashboard.indexing import upsert_single_run
+        upsert_single_run(
+            project_id=project_id,
+            orchestration_kit_root=str(REPO_ROOT.resolve()),
+            project_root=str(run_project_root()),
+            run_id=run_id,
+            run_root=run_root,
+        )
+    except Exception as exc:
+        print(
+            f"[tools/kit] dashboard upsert failed (continuing): {exc}",
+            file=sys.stderr,
+        )
+
+
 def run_project_root() -> Path:
     if PROJECT_ROOT is not None:
         return PROJECT_ROOT.resolve()
@@ -594,6 +623,9 @@ def run_phase(argv: list[str]) -> int:
         cwd=str(cwd.resolve()),
     )
 
+    # Upsert run into dashboard DB immediately so it's visible as "running".
+    dashboard_upsert_run(dashboard_project_id, run_id, run_root)
+
     cmd = [script, args.phase] + args.phase_args
     env = os.environ.copy()
     # Allow nested Claude Code sessions (sub-agents spawned by kit scripts).
@@ -765,7 +797,8 @@ def run_phase(argv: list[str]) -> int:
         print(f"manifest={output['paths']['manifest']}")
         print(f"log={output['paths']['log']}")
 
-    dashboard_index_project(dashboard_project_id)
+    # Upsert completed run into dashboard DB (replaces full re-index).
+    dashboard_upsert_run(dashboard_project_id, run_id, run_root)
 
     return 0 if exit_code == 0 else exit_code
 
