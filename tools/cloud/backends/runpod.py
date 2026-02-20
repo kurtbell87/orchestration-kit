@@ -14,9 +14,12 @@ from typing import Optional
 from ..config import (
     AWS_REGION,
     RESOURCE_TAGS,
+    RUNPOD_CLOUD_TYPE,
     RUNPOD_DEFAULT_DATACENTER,
+    RUNPOD_DEFAULT_GPU,
     RUNPOD_DEFAULT_IMAGE,
     RUNPOD_NETWORK_VOLUME_THRESHOLD_GB,
+    RUNPOD_RUNTIME_IMAGES,
     RUNPOD_S3_ENDPOINT_TEMPLATE,
     S3_BUCKET,
     S3_RUNS_PREFIX,
@@ -63,8 +66,14 @@ class RunPodBackend(ComputeBackend):
 
     def provision(self, config: InstanceConfig) -> str:
         """Create a RunPod pod with the experiment command. Returns pod ID."""
-        docker_image = config.docker_image or RUNPOD_DEFAULT_IMAGE
-        gpu_type = config.gpu_type or config.instance_type or "NVIDIA GeForce RTX 4090"
+        # Resolve Docker image: explicit override > runtime mapping > default
+        docker_image = config.docker_image or RUNPOD_RUNTIME_IMAGES.get(
+            config.runtime, RUNPOD_DEFAULT_IMAGE
+        )
+        gpu_type = config.gpu_type or config.instance_type or RUNPOD_DEFAULT_GPU
+
+        # Resolve datacenter: query API for secure cloud datacenter with stock
+        datacenter_id = self._resolve_datacenter(gpu_type)
 
         bootstrap_raw = BOOTSTRAP_SCRIPT.read_text()
 
@@ -75,6 +84,7 @@ class RunPodBackend(ComputeBackend):
             "AWS_DEFAULT_REGION": AWS_REGION,
             "EXPERIMENT_COMMAND": config.command,
             "MAX_HOURS": str(config.max_hours),
+            "RUNTIME": config.runtime,
             "RUNPOD_API_KEY": self._api_key,
         }
         env.update(config.env_vars)
@@ -113,6 +123,8 @@ class RunPodBackend(ComputeBackend):
                 image_name=docker_image,
                 gpu_type_id=gpu_type,
                 gpu_count=1,
+                cloud_type=RUNPOD_CLOUD_TYPE,
+                data_center_id=datacenter_id,
                 volume_in_gb=0 if use_network_vol else 50,
                 container_disk_in_gb=20,
                 volume_mount_path="/workspace",
@@ -258,6 +270,46 @@ class RunPodBackend(ComputeBackend):
     # -------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------
+
+    def _resolve_datacenter(self, gpu_type: str) -> str:
+        """Query RunPod API for a secure cloud datacenter with stock for the GPU.
+
+        Prefers US datacenters for lower latency to S3. Falls back to
+        RUNPOD_DEFAULT_DATACENTER if the API query fails.
+        """
+        query = '{ dataCenters { id name location gpuAvailability { gpuTypeId stockStatus } } }'
+        try:
+            req = urllib.request.Request(
+                "https://api.runpod.io/graphql",
+                data=json.dumps({"query": query}).encode(),
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+
+            candidates = []
+            for dc in result.get("data", {}).get("dataCenters", []):
+                for gpu in dc.get("gpuAvailability", []):
+                    if gpu["gpuTypeId"] == gpu_type and gpu.get("stockStatus") in ("High", "Medium"):
+                        candidates.append(dc["id"])
+                        break
+
+            if not candidates:
+                return RUNPOD_DEFAULT_DATACENTER
+
+            # Prefer US datacenters, then Canada, then anything
+            us = [c for c in candidates if c.startswith("US-")]
+            if us:
+                return us[0]
+            ca = [c for c in candidates if c.startswith("CA-")]
+            if ca:
+                return ca[0]
+            return candidates[0]
+        except Exception:
+            return RUNPOD_DEFAULT_DATACENTER
 
     def _runpod_s3_client(self, datacenter: str = RUNPOD_DEFAULT_DATACENTER):
         """Create a boto3 S3 client for the RunPod S3-compatible endpoint."""

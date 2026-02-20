@@ -73,11 +73,43 @@ WATCHDOG_PID=$!
 # -----------------------------------------------------------------------
 echo "=== Running experiment ==="
 echo "Command: $EXPERIMENT_COMMAND"
+echo "Runtime: ${RUNTIME:-python}"
+echo "Docker image: ${DOCKER_IMAGE:-python:3.12-slim}"
 
-# Build a requirements install step if requirements.txt exists
-INSTALL_CMD=""
-if [ -f "${WORKDIR}/requirements.txt" ]; then
-    INSTALL_CMD="pip install -q uv && uv pip install --system --no-cache-dir -q -r /work/requirements.txt &&"
+# Resolve Docker image (default: python:3.12-slim for backward compat)
+DOCKER_IMAGE="${DOCKER_IMAGE:-python:3.12-slim}"
+RUNTIME="${RUNTIME:-python}"
+
+# Build pre-command based on runtime
+PRE_CMD=""
+case "$RUNTIME" in
+    python)
+        if [ -f "${WORKDIR}/requirements.txt" ]; then
+            PRE_CMD="pip install -q uv && uv pip install --system --no-cache-dir -q -r /work/requirements.txt &&"
+        fi
+        ;;
+    cpp)
+        # For cpp runtime, optionally build if CMakeLists.txt present and no build/ dir
+        if [ -f "${WORKDIR}/CMakeLists.txt" ] && [ ! -d "${WORKDIR}/build" ]; then
+            PRE_CMD="mkdir -p /work/build && cd /work/build && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --parallel \$(nproc) && cd /work &&"
+        fi
+        ;;
+    cpp-python)
+        # Both: pip install + cmake build
+        PRE_CMD=""
+        if [ -f "${WORKDIR}/requirements.txt" ]; then
+            PRE_CMD="pip install -q uv && uv pip install --system --no-cache-dir -q -r /work/requirements.txt &&"
+        fi
+        if [ -f "${WORKDIR}/CMakeLists.txt" ] && [ ! -d "${WORKDIR}/build" ]; then
+            PRE_CMD="${PRE_CMD}mkdir -p /work/build && cd /work/build && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --parallel \$(nproc) && cd /work &&"
+        fi
+        ;;
+esac
+
+# ECR login if image is from ECR (contains .dkr.ecr.)
+if echo "$DOCKER_IMAGE" | grep -q '\.dkr\.ecr\.'; then
+    echo "=== Authenticating with ECR ==="
+    aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$(echo "$DOCKER_IMAGE" | cut -d/ -f1)" 2>/dev/null || true
 fi
 
 EXIT_CODE=0
@@ -86,8 +118,9 @@ docker run --rm \
     -w /work \
     -e AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION" \
     -e RUN_ID="$RUN_ID" \
-    python:3.12-slim \
-    bash -c "${INSTALL_CMD} ${EXPERIMENT_COMMAND}" \
+    -e RUNTIME="$RUNTIME" \
+    "$DOCKER_IMAGE" \
+    bash -c "${PRE_CMD} ${EXPERIMENT_COMMAND}" \
     >> "$LOGFILE" 2>&1 || EXIT_CODE=$?
 
 echo "=== Experiment finished with exit code: $EXIT_CODE ==="

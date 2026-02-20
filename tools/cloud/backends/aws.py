@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 from ..config import (
     AWS_REGION,
+    EC2_RUNTIME_IMAGES,
     SSH_KEY_NAME,
     RESOURCE_TAGS,
     S3_BUCKET,
@@ -334,6 +335,9 @@ class AWSBackend(ComputeBackend):
         """Render the bootstrap script with run-specific variables."""
         template = BOOTSTRAP_SCRIPT.read_text()
 
+        # Resolve Docker image based on runtime
+        docker_image = EC2_RUNTIME_IMAGES.get(config.runtime, "python:3.12-slim")
+
         # Inject variables at the top of the script
         var_block = "\n".join([
             f'export RUN_ID="{config.run_id}"',
@@ -342,6 +346,8 @@ class AWSBackend(ComputeBackend):
             f'export AWS_DEFAULT_REGION="{AWS_REGION}"',
             f'export EXPERIMENT_COMMAND="{config.command}"',
             f'export MAX_HOURS="{config.max_hours}"',
+            f'export DOCKER_IMAGE="{docker_image}"',
+            f'export RUNTIME="{config.runtime}"',
         ])
 
         # Forward local AWS credentials so the instance can access S3.

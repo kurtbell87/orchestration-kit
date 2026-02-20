@@ -20,6 +20,7 @@ class ComputeProfile:
     memory_gb: float = 0.0
     gpu_type: str = "none"                   # none, any, A100, H100
     estimated_wall_hours: float = 0.0
+    runtime: str = "python"                  # python, cpp, cpp-python
 
     # Resource budget fields (from parent section)
     tier: str = "Quick"                      # Quick, Standard, Heavy
@@ -101,6 +102,10 @@ def parse_spec(spec_path: str | Path) -> ComputeProfile:
         profile.gpu_type = str(data["gpu_type"]).lower()
     if "estimated_wall_hours" in data:
         profile.estimated_wall_hours = float(data["estimated_wall_hours"])
+    if "runtime" in data:
+        val = str(data["runtime"]).lower().replace("_", "-")
+        if val in ("python", "cpp", "cpp-python"):
+            profile.runtime = val
 
     return profile
 

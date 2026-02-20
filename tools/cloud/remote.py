@@ -80,6 +80,7 @@ def run(
     tags: Optional[dict[str, str]] = None,
     network_volume_id: Optional[str] = None,
     allow_duplicate: bool = False,
+    runtime: str = "python",
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -101,6 +102,7 @@ def run(
         "s3_prefix": s3_prefix,
         "use_spot": use_spot,
         "max_hours": max_hours,
+        "runtime": runtime,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "pending",
         "instance_id": None,
@@ -146,6 +148,7 @@ def run(
             use_spot=use_spot,
             env_vars=env_vars or {},
             tags={**(tags or {}), "SpecFile": spec_file or ""},
+            runtime=runtime,
             network_volume_id=network_volume_id,
         )
         instance_id = backend.provision(config)

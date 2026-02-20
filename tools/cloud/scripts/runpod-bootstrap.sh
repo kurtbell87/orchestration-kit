@@ -34,19 +34,33 @@ echo "RUN_ID=$RUN_ID"
 echo "EXPERIMENT_COMMAND=$EXPERIMENT_COMMAND"
 echo "MAX_HOURS=$MAX_HOURS"
 
+RUNTIME="${RUNTIME:-python}"
+echo "Runtime: $RUNTIME"
+
 # -----------------------------------------------------------------------
 # 1. Install AWS CLI (for S3 access)
 # -----------------------------------------------------------------------
-echo "=== Installing uv ==="
-pip install -q uv 2>/dev/null || true
+# uv only needed for python/cpp-python runtimes, but AWS CLI needs pip
+case "$RUNTIME" in
+    python|cpp-python)
+        echo "=== Installing uv ==="
+        pip install -q uv 2>/dev/null || true
+        ;;
+esac
 
 if ! command -v aws &>/dev/null; then
     echo "=== Installing AWS CLI ==="
-    uv pip install --system -q awscli 2>/dev/null || {
+    if command -v uv &>/dev/null; then
+        uv pip install --system -q awscli 2>/dev/null || {
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            cd /tmp && unzip -q awscliv2.zip && ./aws/install --update
+            cd /workspace
+        }
+    else
         curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
         cd /tmp && unzip -q awscliv2.zip && ./aws/install --update
         cd /workspace
-    }
+    fi
 fi
 
 # -----------------------------------------------------------------------
@@ -70,12 +84,29 @@ if aws s3 ls "${S3_BASE}/data/" --region "$AWS_DEFAULT_REGION" 2>/dev/null; then
 fi
 
 # -----------------------------------------------------------------------
-# 4. Install Python dependencies
+# 4. Install dependencies (runtime-conditional)
 # -----------------------------------------------------------------------
-if [ -f "${WORKDIR}/requirements.txt" ]; then
-    echo "=== Installing dependencies ==="
-    uv pip install --system --no-cache-dir -q -r "${WORKDIR}/requirements.txt"
-fi
+case "$RUNTIME" in
+    python|cpp-python)
+        if [ -f "${WORKDIR}/requirements.txt" ]; then
+            echo "=== Installing Python dependencies ==="
+            uv pip install --system --no-cache-dir -q -r "${WORKDIR}/requirements.txt"
+        fi
+        ;;
+esac
+
+case "$RUNTIME" in
+    cpp|cpp-python)
+        if [ -f "${WORKDIR}/CMakeLists.txt" ] && [ ! -d "${WORKDIR}/build" ]; then
+            echo "=== Building C++ project ==="
+            mkdir -p "${WORKDIR}/build"
+            cd "${WORKDIR}/build"
+            cmake .. -DCMAKE_BUILD_TYPE=Release
+            cmake --build . --parallel "$(nproc)"
+            cd "${WORKDIR}"
+        fi
+        ;;
+esac
 
 # -----------------------------------------------------------------------
 # 5. Watchdog: auto-terminate after MAX_HOURS

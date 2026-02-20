@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cloud import remote, s3
-from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER
+from cloud.config import DEFAULT_MAX_HOURS, DEFAULT_RUNTIME, RUNPOD_DEFAULT_DATACENTER, VALID_RUNTIMES
 from cloud.preflight import check_spec
 from cloud.remote import DuplicateSpecError
 from cloud import state as project_state
@@ -39,6 +39,7 @@ def cmd_run(args):
     backend_name = args.backend
     instance_type = args.instance_type
     use_spot = not args.on_demand
+    runtime = args.runtime  # may be None if not explicitly set
 
     if spec_file and (not backend_name or not instance_type):
         pf = check_spec(spec_file)
@@ -55,10 +56,14 @@ def cmd_run(args):
             instance_type = pf.get("instance_type", "c7a.8xlarge")
         if "use_spot" in pf and pf["recommendation"] != "local":
             use_spot = pf["use_spot"] and not args.on_demand
+        # Resolve runtime: explicit flag > preflight profile > default
+        if runtime is None:
+            runtime = pf.get("runtime", DEFAULT_RUNTIME)
 
     # Defaults if still not set
     backend_name = backend_name or "aws"
     instance_type = instance_type or "c7a.8xlarge"
+    runtime = runtime or DEFAULT_RUNTIME
 
     # Resolve project root
     project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
@@ -94,6 +99,7 @@ def cmd_run(args):
             env_vars=env_vars,
             network_volume_id=getattr(args, "volume", None),
             allow_duplicate=args.allow_duplicate,
+            runtime=runtime,
         )
     except DuplicateSpecError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -104,6 +110,7 @@ def cmd_run(args):
     elif args.dry_run:
         print(f"\n[DRY RUN] Would execute on {backend_name} {instance_type}:")
         print(f"  Command:  {command}")
+        print(f"  Runtime:  {runtime}")
         print(f"  Data:     {data_dirs}")
         print(f"  Max hours: {args.max_hours}")
         print(f"  Spot:     {use_spot}")
@@ -313,6 +320,7 @@ def main():
     p_run.add_argument("command", help="Shell command to execute on remote instance")
     p_run.add_argument("--spec", help="Experiment spec file (for compute profile)")
     p_run.add_argument("--backend", choices=["aws", "runpod"], help="Force backend")
+    p_run.add_argument("--runtime", choices=list(VALID_RUNTIMES), default=None, help=f"Runtime environment (default: from spec or '{DEFAULT_RUNTIME}')")
     p_run.add_argument("--instance-type", help="Override instance type")
     p_run.add_argument("--data-dirs", help="Comma-separated local dirs to upload")
     p_run.add_argument("--sync-back", default="results", help="Remote dir to pull results from")
