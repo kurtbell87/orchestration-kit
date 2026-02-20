@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+set -uo pipefail
+# Note: no set -e — we track failures via counters, not exit codes.
+
+# ---------------------------------------------------------------------------
+# project-doctor — Comprehensive health check for orchestration-kit projects.
+#
+# Usage:
+#   project-doctor           Run all checks
+#   project-doctor --fix     Run all checks and auto-fix what's possible
+#   project-doctor --json    Machine-readable output
+# ---------------------------------------------------------------------------
+
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+RESET='\033[0m'
+
+FIX_MODE=false
+JSON_MODE=false
+PASS_COUNT=0
+WARN_COUNT=0
+FAIL_COUNT=0
+FIX_COUNT=0
+RESULTS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --fix)  FIX_MODE=true ;;
+        --json) JSON_MODE=true ;;
+    esac
+done
+
+PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+cd "$PROJECT_ROOT"
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+pass() {
+    PASS_COUNT=$((PASS_COUNT + 1))
+    RESULTS+=("pass|$1|$2")
+    $JSON_MODE || echo -e "  ${GREEN}\xE2\x9C\x93${RESET} ${1}  ${DIM}${2}${RESET}"
+}
+
+warn() {
+    WARN_COUNT=$((WARN_COUNT + 1))
+    RESULTS+=("warn|$1|$2")
+    $JSON_MODE || echo -e "  ${YELLOW}\xE2\x9A\xA0${RESET} ${1}  ${DIM}${2}${RESET}"
+}
+
+fail() {
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    RESULTS+=("fail|$1|$2")
+    $JSON_MODE || echo -e "  ${RED}\xE2\x9C\x97${RESET} ${1}  ${DIM}${2}${RESET}"
+}
+
+fixed() {
+    FIX_COUNT=$((FIX_COUNT + 1))
+    RESULTS+=("fixed|$1|$2")
+    $JSON_MODE || echo -e "  ${BLUE}\xE2\x9C\xA8${RESET} ${1}  ${DIM}${2}${RESET}"
+}
+
+section() {
+    $JSON_MODE || echo ""
+    $JSON_MODE || echo -e "${BOLD}${CYAN}$1${RESET}"
+}
+
+# ---------------------------------------------------------------------------
+# Checks
+# ---------------------------------------------------------------------------
+
+section "Repository Structure"
+
+# 1. Git repo?
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+    pass "Git repository" "$(git rev-parse --show-toplevel)"
+else
+    fail "Not a git repository" "Run from project root"
+fi
+
+# 2. Subtree vs submodule?
+if [ -f "orchestration-kit/CLAUDE.md" ] && [ ! -f "orchestration-kit/.git" ]; then
+    pass "orchestration-kit is subtree" "Full directory, worktree-safe"
+elif [ -f "orchestration-kit/.git" ]; then
+    warn "orchestration-kit is submodule" "Consider converting to subtree (tools/sync-upstream)"
+elif [ -e "orchestration-kit" ]; then
+    if [ -L "orchestration-kit" ]; then
+        warn "orchestration-kit is symlink" "$(readlink orchestration-kit)"
+    else
+        fail "orchestration-kit exists but unrecognized type" "ls -la orchestration-kit"
+    fi
+else
+    fail "orchestration-kit/ missing" "Run: git subtree add --prefix orchestration-kit <url> main --squash"
+fi
+
+# 3. Upstream remote configured?
+UPSTREAM_REMOTE="${ORCHESTRATION_KIT_UPSTREAM_REMOTE:-orchestration-kit-upstream}"
+if git remote get-url "$UPSTREAM_REMOTE" &>/dev/null; then
+    pass "Upstream remote '${UPSTREAM_REMOTE}'" "$(git remote get-url "$UPSTREAM_REMOTE")"
+else
+    if $FIX_MODE; then
+        # Try to auto-detect from common locations
+        if [ -f "orchestration-kit/.git" ]; then
+            URL=$(git -C orchestration-kit remote get-url origin 2>/dev/null || echo "")
+        fi
+        if [ -z "${URL:-}" ]; then
+            URL="https://github.com/kurtbell87/orchestration-kit.git"
+        fi
+        git remote add "$UPSTREAM_REMOTE" "$URL" 2>/dev/null && \
+            fixed "Added upstream remote '${UPSTREAM_REMOTE}'" "$URL" || \
+            fail "No upstream remote '${UPSTREAM_REMOTE}'" "git remote add ${UPSTREAM_REMOTE} <url>"
+    else
+        fail "No upstream remote '${UPSTREAM_REMOTE}'" "Run with --fix or: git remote add ${UPSTREAM_REMOTE} <url>"
+    fi
+fi
+
+section "Environment & Secrets"
+
+# 4. .orchestration-kit.env exists?
+if [ -f ".orchestration-kit.env" ]; then
+    pass ".orchestration-kit.env exists" ""
+else
+    if $FIX_MODE && [ -x "orchestration-kit/install.sh" ]; then
+        echo "n" | ./orchestration-kit/install.sh --skip-smoke &>/dev/null && \
+            fixed "Ran install.sh" "Created .orchestration-kit.env" || \
+            fail ".orchestration-kit.env missing" "Run: echo n | ./orchestration-kit/install.sh --skip-smoke"
+    else
+        fail ".orchestration-kit.env missing" "Run: echo n | ./orchestration-kit/install.sh --skip-smoke"
+    fi
+fi
+
+# 5. .env.local for secrets?
+if [ -f ".env.local" ]; then
+    if grep -q "MCP_TOKEN" ".env.local" 2>/dev/null; then
+        pass ".env.local has MCP token" "Secrets stay out of git"
+    else
+        warn ".env.local exists but no MCP_TOKEN" "Add: export ORCHESTRATION_KIT_MCP_TOKEN=<token>"
+    fi
+elif [ -f ".orchestration-kit.env" ] && grep -q 'source.*\.env\.local' ".orchestration-kit.env" 2>/dev/null; then
+    warn ".env.local missing (referenced by .orchestration-kit.env)" "Create it with your MCP token"
+else
+    warn "No .env.local pattern" "Secrets may be in tracked files"
+fi
+
+# 6. Token NOT in tracked files?
+if git ls-files .orchestration-kit.env 2>/dev/null | grep -q . ; then
+    if grep -qE 'MCP_TOKEN="[a-f0-9]{32,}"' ".orchestration-kit.env" 2>/dev/null; then
+        fail "Hardcoded token in tracked .orchestration-kit.env" "Move to .env.local"
+    else
+        pass "No hardcoded token in tracked env" ""
+    fi
+fi
+
+# 7. .env.local is gitignored?
+if [ -f ".env.local" ]; then
+    if git check-ignore -q ".env.local" 2>/dev/null; then
+        pass ".env.local is gitignored" ""
+    else
+        fail ".env.local is NOT gitignored" "Add .env.local or .env.* to .gitignore"
+    fi
+fi
+
+section "Kit Symlinks"
+
+# 8. Kit scripts symlinked?
+for script in .kit/tdd.sh .kit/experiment.sh .kit/math.sh; do
+    name=$(basename "$script")
+    if [ -L "$script" ] && [ -x "$script" ]; then
+        pass "$name symlinked" "→ $(readlink "$script")"
+    elif [ -f "$script" ]; then
+        warn "$name exists but not a symlink" "May be stale copy"
+    else
+        if $FIX_MODE && [ -x "orchestration-kit/install.sh" ]; then
+            echo "n" | ./orchestration-kit/install.sh --skip-smoke &>/dev/null 2>&1
+            if [ -L "$script" ]; then
+                fixed "Restored $name symlink" ""
+            else
+                fail "$name missing" "Run install.sh"
+            fi
+        else
+            fail "$name missing" "Run: echo n | ./orchestration-kit/install.sh --skip-smoke"
+        fi
+    fi
+done
+
+section "Artifact Store"
+
+# 9. .s3-cache is gitignored?
+if git check-ignore -q ".kit/.s3-cache/" 2>/dev/null; then
+    pass ".kit/.s3-cache/ is gitignored" ""
+else
+    warn ".kit/.s3-cache/ not in .gitignore" "Large binaries could be committed"
+fi
+
+# 10. Any manifest files?
+MANIFEST_COUNT=$(find .kit/results -name '.s3-manifest.json' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$MANIFEST_COUNT" -gt 0 ]; then
+    pass "${MANIFEST_COUNT} artifact manifests found" ".kit/results/**/.s3-manifest.json"
+
+    # 11. Check symlink health
+    BROKEN=0
+    TOTAL=0
+    while IFS= read -r manifest; do
+        dir=$(dirname "$manifest")
+        for file in $(python3 -c "import json; [print(k) for k in json.load(open('$manifest')).get('files',{})]" 2>/dev/null); do
+            TOTAL=$((TOTAL + 1))
+            fp="$dir/$file"
+            if [ -L "$fp" ]; then
+                target=$(readlink "$fp")
+                resolved="$dir/$target"
+                if [ ! -e "$resolved" ]; then
+                    BROKEN=$((BROKEN + 1))
+                fi
+            fi
+        done
+    done < <(find .kit/results -name '.s3-manifest.json' 2>/dev/null)
+
+    if [ "$BROKEN" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
+        pass "All ${TOTAL} artifact symlinks resolve" "Cache is hydrated"
+    elif [ "$BROKEN" -gt 0 ]; then
+        warn "${BROKEN}/${TOTAL} artifact symlinks broken" "Run: orchestration-kit/tools/artifact-store hydrate"
+    fi
+else
+    pass "No artifact manifests" "No large files managed yet"
+fi
+
+# 12. AWS credentials for artifact store?
+if command -v aws &>/dev/null && aws sts get-caller-identity &>/dev/null 2>&1; then
+    pass "AWS credentials valid" "$(aws sts get-caller-identity --query 'Account' --output text 2>/dev/null || echo '?')"
+else
+    warn "AWS credentials not available" "artifact-store push/hydrate won't work"
+fi
+
+section "Git Health"
+
+# 13. Repo size
+GIT_SIZE=$(du -sm .git 2>/dev/null | awk '{print $1}')
+if [ "$GIT_SIZE" -lt 300 ]; then
+    pass "Git dir size: ${GIT_SIZE} MB" "Healthy"
+elif [ "$GIT_SIZE" -lt 1000 ]; then
+    warn "Git dir size: ${GIT_SIZE} MB" "Consider running: git gc --aggressive"
+else
+    fail "Git dir size: ${GIT_SIZE} MB" "Large blobs in history? Run: git rev-list --objects --all | git cat-file --batch-check | sort -k3 -n -r | head -5"
+fi
+
+# 14. Largest blob
+LARGEST_BLOB=$(git rev-list --objects --all 2>/dev/null | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' 2>/dev/null | awk '$1 == "blob" {print $3, $4}' | sort -rn | head -1 || true)
+if [ -n "$LARGEST_BLOB" ]; then
+    BLOB_SIZE=$(echo "$LARGEST_BLOB" | awk '{print $1}')
+    BLOB_NAME=$(echo "$LARGEST_BLOB" | awk '{print $2}')
+    BLOB_MB=$((BLOB_SIZE / 1048576))
+    if [ "$BLOB_MB" -lt 5 ]; then
+        pass "Largest blob: ${BLOB_MB} MB" "$BLOB_NAME"
+    elif [ "$BLOB_MB" -lt 50 ]; then
+        warn "Largest blob: ${BLOB_MB} MB" "$BLOB_NAME — consider artifact-store push"
+    else
+        fail "Largest blob: ${BLOB_MB} MB" "$BLOB_NAME — use artifact-store or filter-repo"
+    fi
+fi
+
+# 15. Pack file count (too many loose objects = slow push)
+PACK_COUNT=$(find .git/objects/pack -name '*.pack' 2>/dev/null | wc -l | tr -d ' ')
+LOOSE_COUNT=$(find .git/objects -maxdepth 2 -type f ! -path '*/pack/*' ! -path '*/info/*' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$LOOSE_COUNT" -gt 5000 ]; then
+    if $FIX_MODE; then
+        git repack -a -d --depth=250 --window=250 &>/dev/null && git gc &>/dev/null && \
+            fixed "Repacked ${LOOSE_COUNT} loose objects" "" || \
+            fail "${LOOSE_COUNT} loose objects" "Run: git repack -a -d && git gc"
+    else
+        fail "${LOOSE_COUNT} loose objects (${PACK_COUNT} packs)" "Run with --fix or: git repack -a -d && git gc"
+    fi
+elif [ "$LOOSE_COUNT" -gt 1000 ]; then
+    warn "${LOOSE_COUNT} loose objects (${PACK_COUNT} packs)" "Run: git gc"
+else
+    pass "${LOOSE_COUNT} loose objects, ${PACK_COUNT} pack(s)" "Well-packed"
+fi
+
+section "Dashboard"
+
+# 16. Dashboard DB exists?
+DB_PATH="${ORCHESTRATION_KIT_DASHBOARD_HOME:-.kit/.dashboard}/runs.db"
+if [ -f "$DB_PATH" ]; then
+    RUN_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM runs;" 2>/dev/null || echo "?")
+    pass "Dashboard DB: ${RUN_COUNT} runs" "$DB_PATH"
+else
+    pass "No dashboard DB yet" "Will be created on first kit run"
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+TOTAL=$((PASS_COUNT + WARN_COUNT + FAIL_COUNT + FIX_COUNT))
+
+if $JSON_MODE; then
+    echo "{"
+    echo "  \"pass\": $PASS_COUNT,"
+    echo "  \"warn\": $WARN_COUNT,"
+    echo "  \"fail\": $FAIL_COUNT,"
+    echo "  \"fixed\": $FIX_COUNT,"
+    echo "  \"total\": $TOTAL,"
+    echo "  \"results\": ["
+    first=true
+    for r in "${RESULTS[@]}"; do
+        IFS='|' read -r status name detail <<< "$r"
+        $first || echo ","
+        echo -n "    {\"status\":\"$status\",\"name\":\"$name\",\"detail\":\"$detail\"}"
+        first=false
+    done
+    echo ""
+    echo "  ]"
+    echo "}"
+else
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    if [ "$FAIL_COUNT" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
+        echo -e "  ${GREEN}${BOLD}ALL CLEAR${RESET}  ${PASS_COUNT} checks passed"
+    elif [ "$FAIL_COUNT" -eq 0 ]; then
+        echo -e "  ${YELLOW}${BOLD}MOSTLY HEALTHY${RESET}  ${GREEN}${PASS_COUNT} pass${RESET}  ${YELLOW}${WARN_COUNT} warn${RESET}"
+    else
+        echo -e "  ${RED}${BOLD}NEEDS ATTENTION${RESET}  ${GREEN}${PASS_COUNT} pass${RESET}  ${YELLOW}${WARN_COUNT} warn${RESET}  ${RED}${FAIL_COUNT} fail${RESET}"
+    fi
+    if [ "$FIX_COUNT" -gt 0 ]; then
+        echo -e "  ${BLUE}${BOLD}${FIX_COUNT} issues auto-fixed${RESET}"
+    fi
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo ""
+
+    if [ "$FAIL_COUNT" -gt 0 ] && ! $FIX_MODE; then
+        echo -e "  ${DIM}Tip: run ${RESET}${BOLD}project-doctor --fix${RESET}${DIM} to auto-repair what's possible.${RESET}"
+        echo ""
+    fi
+fi
+
+exit "$FAIL_COUNT"

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# sync-upstream — Two-way sync between project subtree and upstream repo.
+#
+# Usage:
+#   sync-upstream pull   Pull latest from upstream into orchestration-kit/
+#   sync-upstream push   Push local changes back to upstream
+#   sync-upstream status Show divergence between local and upstream
+# ---------------------------------------------------------------------------
+
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+PREFIX="orchestration-kit"
+
+# Resolve project root
+PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+cd "$PROJECT_ROOT"
+
+# Source env for remote/branch config
+if [ -f ".orchestration-kit.env" ]; then
+    source .orchestration-kit.env
+fi
+
+REMOTE="${ORCHESTRATION_KIT_UPSTREAM_REMOTE:-orchestration-kit-upstream}"
+BRANCH="${ORCHESTRATION_KIT_UPSTREAM_BRANCH:-main}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+info()  { echo -e "${CYAN}[sync]${RESET} $*"; }
+ok()    { echo -e "${GREEN}[sync]${RESET} $*"; }
+warn()  { echo -e "${YELLOW}[sync]${RESET} $*"; }
+fail()  { echo -e "${RED}[sync]${RESET} $*" >&2; exit 1; }
+
+ensure_remote() {
+    if ! git remote get-url "$REMOTE" &>/dev/null; then
+        fail "Remote '${REMOTE}' not found. Add it with:\n  git remote add ${REMOTE} <orchestration-kit-repo-url>"
+    fi
+}
+
+ensure_clean() {
+    if [ -n "$(git status --porcelain)" ]; then
+        fail "Working tree is dirty. Commit or stash changes first."
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_pull() {
+    ensure_remote
+    ensure_clean
+    info "Fetching ${BOLD}${REMOTE}/${BRANCH}${RESET}..."
+    git fetch "$REMOTE" "$BRANCH"
+
+    local local_tree upstream_tree
+    local_tree=$(git log -1 --format='%T' -- "$PREFIX")
+    upstream_tree=$(git log -1 --format='%T' "$REMOTE/$BRANCH")
+
+    if [ "$local_tree" = "$upstream_tree" ]; then
+        ok "Already up to date."
+        return 0
+    fi
+
+    info "Pulling upstream changes into ${BOLD}${PREFIX}/${RESET}..."
+    git subtree pull --prefix "$PREFIX" "$REMOTE" "$BRANCH" --squash -m "chore: pull upstream orchestration-kit changes"
+
+    ok "Pull complete. Review with: ${DIM}git log --oneline -5${RESET}"
+}
+
+cmd_push() {
+    ensure_remote
+    ensure_clean
+    info "Pushing local ${BOLD}${PREFIX}/${RESET} changes to ${BOLD}${REMOTE}/${BRANCH}${RESET}..."
+
+    git subtree push --prefix "$PREFIX" "$REMOTE" "$BRANCH"
+
+    ok "Push complete. Changes are on ${BOLD}${REMOTE}/${BRANCH}${RESET}."
+}
+
+cmd_status() {
+    ensure_remote
+    info "Fetching ${BOLD}${REMOTE}/${BRANCH}${RESET}..."
+    git fetch "$REMOTE" "$BRANCH" 2>/dev/null
+
+    echo ""
+    echo -e "${BOLD}Subtree:${RESET}  ${PREFIX}/"
+    echo -e "${BOLD}Remote:${RESET}   $(git remote get-url "$REMOTE") (${BRANCH})"
+    echo ""
+
+    # Show local commits touching orchestration-kit since last subtree merge
+    local last_merge
+    last_merge=$(git log --oneline --merges --grep="Squashed" -- "$PREFIX" -1 --format='%H' 2>/dev/null || echo "")
+    if [ -n "$last_merge" ]; then
+        local local_count
+        local_count=$(git rev-list --count "${last_merge}..HEAD" -- "$PREFIX" 2>/dev/null || echo 0)
+        echo -e "${BOLD}Local commits since last sync:${RESET} ${local_count}"
+        if [ "$local_count" -gt 0 ]; then
+            git log --oneline "${last_merge}..HEAD" -- "$PREFIX" | head -10
+        fi
+    else
+        echo -e "${DIM}No subtree merge found — this may be the initial import.${RESET}"
+    fi
+
+    echo ""
+
+    # Show upstream commits since our copy
+    local upstream_count
+    upstream_count=$(git rev-list --count "$(git merge-base HEAD "$REMOTE/$BRANCH" 2>/dev/null || echo HEAD)".."$REMOTE/$BRANCH" 2>/dev/null || echo "?")
+    echo -e "${BOLD}Upstream commits ahead:${RESET} ${upstream_count}"
+
+    echo ""
+    ok "Run ${DIM}sync-upstream pull${RESET} to update, ${DIM}sync-upstream push${RESET} to contribute back."
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+case "${1:-help}" in
+    pull)   cmd_pull ;;
+    push)   cmd_push ;;
+    status) cmd_status ;;
+    help|--help|-h)
+        echo "Usage: sync-upstream {pull|push|status}"
+        echo ""
+        echo "  pull    Pull latest upstream changes into orchestration-kit/"
+        echo "  push    Push local orchestration-kit/ changes back upstream"
+        echo "  status  Show sync status and divergence"
+        ;;
+    *)
+        fail "Unknown command: $1. Try: sync-upstream {pull|push|status}"
+        ;;
+esac

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# install-hooks — Install git hooks for auto-bootstrapping worktrees.
+#
+# Installs a post-checkout hook that:
+#   1. Detects worktree creation (branch checkout in new worktree)
+#   2. Auto-sources .orchestration-kit.env with correct PROJECT_ROOT
+#   3. Reminds about `artifact-store hydrate` when symlinks are broken
+# ---------------------------------------------------------------------------
+
+PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+HOOKS_DIR="${PROJECT_ROOT}/.git/hooks"
+
+# In a worktree, .git is a file pointing to the main repo's worktree dir
+if [ -f "${PROJECT_ROOT}/.git" ]; then
+    GIT_DIR=$(cat "${PROJECT_ROOT}/.git" | sed 's/^gitdir: //')
+    HOOKS_DIR="${GIT_DIR}/../hooks"
+fi
+
+mkdir -p "$HOOKS_DIR"
+
+cat > "${HOOKS_DIR}/post-checkout" << 'HOOKEOF'
+#!/usr/bin/env bash
+# Auto-bootstrap orchestration-kit in new worktrees.
+# Installed by: orchestration-kit/tools/install-hooks
+
+PREV_HEAD="$1"
+NEW_HEAD="$2"
+IS_BRANCH_CHECKOUT="$3"
+
+# Only run on branch checkout (not file checkout)
+[ "$IS_BRANCH_CHECKOUT" = "1" ] || exit 0
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+
+# ---------------------------------------------------------------------------
+# 1. Fix .orchestration-kit.env PROJECT_ROOT if it points elsewhere
+# ---------------------------------------------------------------------------
+ENV_FILE="${PROJECT_ROOT}/.orchestration-kit.env"
+if [ -f "$ENV_FILE" ]; then
+    CURRENT_ROOT=$(grep '^export PROJECT_ROOT=' "$ENV_FILE" | head -1 | cut -d'"' -f2)
+    if [ -n "$CURRENT_ROOT" ] && [ "$CURRENT_ROOT" != "$PROJECT_ROOT" ]; then
+        sed -i.bak \
+            -e "s|export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${PROJECT_ROOT}\"|" \
+            -e "s|export ORCHESTRATION_KIT_ROOT=.*|export ORCHESTRATION_KIT_ROOT=\"${PROJECT_ROOT}/orchestration-kit\"|" \
+            "$ENV_FILE"
+        rm -f "${ENV_FILE}.bak"
+        echo "[orchestration-kit] Updated PROJECT_ROOT in .orchestration-kit.env"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Check kit symlinks
+# ---------------------------------------------------------------------------
+NEED_INSTALL=false
+for script in tdd.sh experiment.sh math.sh; do
+    if [ ! -L "${PROJECT_ROOT}/.kit/${script}" ]; then
+        NEED_INSTALL=true
+        break
+    fi
+done
+
+if $NEED_INSTALL && [ -x "${PROJECT_ROOT}/orchestration-kit/install.sh" ]; then
+    echo "[orchestration-kit] Restoring kit symlinks..."
+    (cd "$PROJECT_ROOT" && echo "n" | ./orchestration-kit/install.sh --skip-smoke) > /dev/null 2>&1
+    # Re-fix PROJECT_ROOT after install (install.sh may overwrite)
+    if [ -f "$ENV_FILE" ]; then
+        sed -i.bak \
+            -e "s|export PROJECT_ROOT=.*|export PROJECT_ROOT=\"${PROJECT_ROOT}\"|" \
+            -e "s|export ORCHESTRATION_KIT_ROOT=.*|export ORCHESTRATION_KIT_ROOT=\"${PROJECT_ROOT}/orchestration-kit\"|" \
+            "$ENV_FILE"
+        rm -f "${ENV_FILE}.bak"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Check artifact store hydration
+# ---------------------------------------------------------------------------
+BROKEN_SYMLINKS=0
+while IFS= read -r link; do
+    if [ ! -e "$link" ]; then
+        BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
+    fi
+done < <(find "${PROJECT_ROOT}/.kit/results" -type l 2>/dev/null)
+
+if [ "$BROKEN_SYMLINKS" -gt 0 ]; then
+    echo ""
+    echo "[orchestration-kit] ${BROKEN_SYMLINKS} artifact symlinks are broken."
+    echo "  Run: orchestration-kit/tools/artifact-store hydrate"
+    echo ""
+fi
+HOOKEOF
+
+chmod +x "${HOOKS_DIR}/post-checkout"
+echo "[install-hooks] Installed post-checkout hook at ${HOOKS_DIR}/post-checkout"
