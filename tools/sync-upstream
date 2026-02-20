@@ -80,10 +80,28 @@ cmd_pull() {
 
 cmd_push() {
     ensure_remote
-    ensure_clean
+    # Note: git subtree push is read-only on the local repo (splits + pushes).
+    # It does NOT require a clean working tree, unlike subtree pull which merges.
+    # We stash if dirty to avoid spurious warnings from older git versions.
+    local stashed=false
+    if [ -n "$(git status --porcelain)" ]; then
+        info "Working tree dirty — stashing for subtree push..."
+        git stash push -q -m "sync-upstream auto-stash"
+        stashed=true
+    fi
+
     info "Pushing local ${BOLD}${PREFIX}/${RESET} changes to ${BOLD}${REMOTE}/${BRANCH}${RESET}..."
 
-    git subtree push --prefix "$PREFIX" "$REMOTE" "$BRANCH"
+    local push_exit=0
+    git subtree push --prefix "$PREFIX" "$REMOTE" "$BRANCH" || push_exit=$?
+
+    if $stashed; then
+        git stash pop -q 2>/dev/null || warn "Could not restore stash. Run: git stash pop"
+    fi
+
+    if [ "$push_exit" -ne 0 ]; then
+        fail "Subtree push failed (exit $push_exit)."
+    fi
 
     ok "Push complete. Changes are on ${BOLD}${REMOTE}/${BRANCH}${RESET}."
 }
