@@ -11,13 +11,11 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-HOOKS_DIR="${PROJECT_ROOT}/.git/hooks"
 
-# In a worktree, .git is a file pointing to the main repo's worktree dir
-if [ -f "${PROJECT_ROOT}/.git" ]; then
-    GIT_DIR=$(cat "${PROJECT_ROOT}/.git" | sed 's/^gitdir: //')
-    HOOKS_DIR="${GIT_DIR}/../hooks"
-fi
+# Resolve the shared hooks dir. Git hooks live in the main .git/hooks/
+# even when running from a worktree (worktrees share hooks by default).
+GIT_COMMON_DIR="$(cd "$PROJECT_ROOT" && git rev-parse --git-common-dir 2>/dev/null || echo "${PROJECT_ROOT}/.git")"
+HOOKS_DIR="${GIT_COMMON_DIR}/hooks"
 
 mkdir -p "$HOOKS_DIR"
 
@@ -95,3 +93,80 @@ HOOKEOF
 
 chmod +x "${HOOKS_DIR}/post-checkout"
 echo "[install-hooks] Installed post-checkout hook at ${HOOKS_DIR}/post-checkout"
+
+# ---------------------------------------------------------------------------
+# pre-push hook — auto-sync orchestration-kit subtree to upstream
+# ---------------------------------------------------------------------------
+
+cat > "${HOOKS_DIR}/pre-push" << 'HOOKEOF'
+#!/usr/bin/env bash
+# Auto-sync orchestration-kit/ subtree changes to upstream on push.
+# Installed by: orchestration-kit/tools/install-hooks
+#
+# When pushing commits that touch orchestration-kit/, this hook
+# automatically runs `sync-upstream push` so the standalone repo
+# stays in sync without manual intervention.
+#
+# Set ORCHESTRATION_KIT_SKIP_SYNC=1 to disable.
+
+[ "${ORCHESTRATION_KIT_SKIP_SYNC:-0}" = "1" ] && exit 0
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+SYNC_TOOL="${PROJECT_ROOT}/orchestration-kit/tools/sync-upstream"
+
+# Exit early if sync tool doesn't exist
+[ -x "$SYNC_TOOL" ] || exit 0
+
+# Read push info from stdin (local_ref local_sha remote_ref remote_sha)
+HAS_KIT_CHANGES=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip deletes
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+    # Determine range — if remote_sha is zero, this is a new branch
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        # New branch: check all commits reachable from local that aren't on any remote branch
+        range="$local_sha"
+        # Use --not --remotes to get only new commits
+        if git diff-tree --no-commit-id --name-only -r "$local_sha" -- orchestration-kit/ 2>/dev/null | grep -q '^orchestration-kit/'; then
+            HAS_KIT_CHANGES=true
+        fi
+    else
+        range="${remote_sha}..${local_sha}"
+        if git diff --name-only "$range" -- orchestration-kit/ 2>/dev/null | grep -q '^orchestration-kit/'; then
+            HAS_KIT_CHANGES=true
+        fi
+    fi
+done
+
+if [ "$HAS_KIT_CHANGES" = "true" ]; then
+    echo ""
+    echo "[orchestration-kit] Detected orchestration-kit/ changes — syncing to upstream..."
+
+    # Check that the upstream remote exists
+    if [ -f "${PROJECT_ROOT}/.orchestration-kit.env" ]; then
+        source "${PROJECT_ROOT}/.orchestration-kit.env"
+    fi
+    REMOTE="${ORCHESTRATION_KIT_UPSTREAM_REMOTE:-orchestration-kit-upstream}"
+    if ! git remote get-url "$REMOTE" &>/dev/null; then
+        echo "[orchestration-kit] WARNING: Remote '${REMOTE}' not found. Skipping upstream sync."
+        echo "  Add it with: git remote add ${REMOTE} <orchestration-kit-repo-url>"
+        exit 0
+    fi
+
+    # Run sync — don't block the push if it fails
+    if (cd "$PROJECT_ROOT" && "$SYNC_TOOL" push) 2>&1; then
+        echo "[orchestration-kit] Upstream sync complete."
+    else
+        echo "[orchestration-kit] WARNING: Upstream sync failed (exit $?). Push continuing."
+        echo "  Run manually: orchestration-kit/tools/sync-upstream push"
+    fi
+    echo ""
+fi
+
+# Always allow the push to proceed
+exit 0
+HOOKEOF
+
+chmod +x "${HOOKS_DIR}/pre-push"
+echo "[install-hooks] Installed pre-push hook at ${HOOKS_DIR}/pre-push"
