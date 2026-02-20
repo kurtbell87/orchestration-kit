@@ -117,6 +117,7 @@ class ServerConfig:
     transport: str = "http"
     dashboard_url: str = "http://127.0.0.1:7340"
     project_root: Path | None = None
+    kit_state_dir: str | None = None
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -363,6 +364,10 @@ class MasterKitFacade:
         env["ORCHESTRATION_KIT_ROOT"] = str(self.root)
         if self.config.project_root:
             env["PROJECT_ROOT"] = str(self.config.project_root)
+        # Forward KIT_STATE_DIR so tools/kit resolves script paths correctly.
+        kit_state_dir = os.getenv("KIT_STATE_DIR")
+        if kit_state_dir:
+            env["KIT_STATE_DIR"] = kit_state_dir
         if extra_env:
             env.update(extra_env)
 
@@ -400,21 +405,38 @@ class MasterKitFacade:
 
     def _launch_background(self, kit: str, action: str, args: list[str]) -> dict[str, Any]:
         run_id = _make_run_id()
-        cmd = [str(self._tool_path("kit")), "--json", kit, action, *args, "--run-id", run_id]
+        # CRITICAL: --run-id and --json must come BEFORE positional args.
+        # tools/kit uses argparse.REMAINDER for phase_args, which swallows
+        # everything after the positional args (kit, phase). Any options
+        # placed after the positionals get consumed as phase_args, not parsed.
+        cmd = [str(self._tool_path("kit")), "--json", "--run-id", run_id, kit, action, *args]
         env = os.environ.copy()
         env["ORCHESTRATION_KIT_ROOT"] = str(self.root)
         if self.config.project_root:
             env["PROJECT_ROOT"] = str(self.config.project_root)
+        # Forward KIT_STATE_DIR so tools/kit resolves script paths correctly
+        # (greenfield projects use ".kit", monorepo uses ".").
+        if self.config.kit_state_dir:
+            env["KIT_STATE_DIR"] = self.config.kit_state_dir
+
+        # Capture output to a launch log for error visibility instead of
+        # discarding to DEVNULL. If the subprocess crashes at startup, the
+        # log file preserves the error for diagnosis.
+        launch_log_dir = self.root / "runs" / "mcp-launches"
+        launch_log_dir.mkdir(parents=True, exist_ok=True)
+        launch_log = launch_log_dir / f"{run_id}.log"
+        log_fh = open(launch_log, "w")  # noqa: SIM115
 
         proc = subprocess.Popen(
             cmd,
             cwd=str(self.root),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
         )
+        log_fh.close()  # subprocess has inherited the fd
         self._background[run_id] = proc
-        return {"run_id": run_id, "status": "launched"}
+        return {"run_id": run_id, "status": "launched", "launch_log": str(launch_log)}
 
     # --- Kit execution tool handlers (fire-and-forget) ---
 
@@ -535,10 +557,13 @@ class MasterKitFacade:
         args = [str(item) for item in optional_list(payload, "args")]
         env_overrides = coerce_env(payload.get("env"))
 
-        cmd = [str(self._tool_path("kit")), "--json", kit, action, *args]
+        # Options must come BEFORE positional args due to argparse.REMAINDER
+        # in tools/kit (see _launch_background comment for details).
+        cmd = [str(self._tool_path("kit")), "--json"]
         reasoning = payload.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             cmd.extend(["--reasoning", reasoning])
+        cmd.extend([kit, action, *args])
         proc = self._run_cmd(cmd, extra_env=env_overrides)
 
         try:
@@ -1133,6 +1158,12 @@ def load_config(argv: list[str]) -> ServerConfig:
     project_root_raw = os.getenv("PROJECT_ROOT")
     project_root = Path(project_root_raw).resolve() if project_root_raw else None
 
+    # KIT_STATE_DIR: greenfield projects set this to ".kit", monorepo uses ".".
+    # Try env first, then detect from project structure.
+    kit_state_dir = os.getenv("KIT_STATE_DIR")
+    if not kit_state_dir and project_root and (project_root / ".kit").is_dir():
+        kit_state_dir = ".kit"
+
     return ServerConfig(
         root=root,
         host=str(args.host),
@@ -1143,6 +1174,7 @@ def load_config(argv: list[str]) -> ServerConfig:
         transport=str(args.transport),
         dashboard_url=dashboard_url,
         project_root=project_root,
+        kit_state_dir=kit_state_dir,
     )
 
 
