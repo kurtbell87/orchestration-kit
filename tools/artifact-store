@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""CLI for S3-backed artifact store.
+
+Usage:
+    artifact-store push <path> [--manifest <dir>] [--dry-run]
+    artifact-store push-dir <dir> [--threshold <bytes>] [--dry-run]
+    artifact-store hydrate [<dir>]
+    artifact-store status [<dir>]
+    artifact-store verify [<dir>]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Add orchestration-kit/tools to sys.path so we can import cloud.*
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from cloud.artifact_store import (
+    push_file,
+    push_dir,
+    hydrate,
+    status,
+    verify,
+)
+
+
+def _project_root() -> Path:
+    """Resolve project root from env or git."""
+    env = os.environ.get("PROJECT_ROOT")
+    if env:
+        return Path(env).resolve()
+    # Walk up to find .git
+    p = Path.cwd()
+    while p != p.parent:
+        if (p / ".git").exists():
+            return p
+        p = p.parent
+    return Path.cwd()
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _parse_threshold(s: str) -> int:
+    """Parse human-readable size like '10MB' to bytes."""
+    s = s.strip().upper()
+    multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+    for suffix, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
+        if s.endswith(suffix):
+            return int(float(s[:-len(suffix)]) * mult)
+    return int(s)
+
+
+def cmd_push(args):
+    root = _project_root()
+    path = Path(args.path).resolve()
+    manifest_dir = Path(args.manifest).resolve() if args.manifest else None
+
+    info = push_file(path, root, manifest_dir, dry_run=args.dry_run)
+
+    if args.json:
+        print(json.dumps(info, indent=2))
+    else:
+        tag = "[DRY RUN] " if args.dry_run else ""
+        skip = " (already in S3)" if info.get("skipped_upload") else ""
+        print(f"{tag}Pushed: {info['original_path']}")
+        print(f"  SHA-256: {info['sha256'][:16]}...")
+        print(f"  Size:    {_human_size(info['size'])}")
+        print(f"  S3 key:  {info['s3_key']}{skip}")
+
+
+def cmd_push_dir(args):
+    root = _project_root()
+    dir_path = Path(args.dir).resolve()
+    threshold = _parse_threshold(args.threshold)
+
+    results = push_dir(dir_path, root, threshold_bytes=threshold, dry_run=args.dry_run)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        tag = "[DRY RUN] " if args.dry_run else ""
+        pushed = [r for r in results if "error" not in r]
+        errors = [r for r in results if "error" in r]
+        for r in pushed:
+            skip = " (S3 exists)" if r.get("skipped_upload") else ""
+            print(f"{tag}{r['file']}  {_human_size(r['size'])}  {r['sha256'][:12]}...{skip}")
+        for r in errors:
+            print(f"ERROR: {r['file']}: {r['error']}", file=sys.stderr)
+        print(f"\n{tag}{len(pushed)} files pushed, {len(errors)} errors")
+
+
+def cmd_hydrate(args):
+    root = _project_root()
+    dir_path = Path(args.dir).resolve() if args.dir else root / ".kit" / "results"
+
+    results = hydrate(dir_path, root)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            print(f"  {r.get('status', 'unknown'):18s} {r['file']}")
+        downloaded = sum(1 for r in results if r.get("downloaded"))
+        print(f"\n{len(results)} files, {downloaded} downloaded from S3")
+
+
+def cmd_status(args):
+    root = _project_root()
+    dir_path = Path(args.dir).resolve() if args.dir else root / ".kit" / "results"
+
+    results = status(dir_path, root)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for r in results:
+            print(f"  {r['status']:18s} {_human_size(r['size']):>10s}  {r['file']}")
+        counts = {}
+        for r in results:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        print(f"\nSummary: {counts}")
+
+
+def cmd_verify(args):
+    root = _project_root()
+    dir_path = Path(args.dir).resolve() if args.dir else root / ".kit" / "results"
+
+    results = verify(dir_path, root)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        ok = 0
+        bad = 0
+        for r in results:
+            if r["status"] == "ok":
+                ok += 1
+            else:
+                bad += 1
+                print(f"  {r['status']:10s} {r['file']}")
+        if bad == 0:
+            print(f"All {ok} files verified OK")
+        else:
+            print(f"\n{ok} OK, {bad} FAILED", file=sys.stderr)
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="S3-backed artifact store with content-addressed storage",
+        prog="artifact-store",
+    )
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_push = sub.add_parser("push", help="Push a single file to S3")
+    p_push.add_argument("path", help="File to push")
+    p_push.add_argument("--manifest", help="Directory for manifest (default: file's parent)")
+    p_push.add_argument("--dry-run", action="store_true")
+    p_push.set_defaults(func=cmd_push)
+
+    p_pushdir = sub.add_parser("push-dir", help="Push all large files in directory")
+    p_pushdir.add_argument("dir", help="Directory to scan")
+    p_pushdir.add_argument("--threshold", default="10MB", help="Min file size (default: 10MB)")
+    p_pushdir.add_argument("--dry-run", action="store_true")
+    p_pushdir.set_defaults(func=cmd_push_dir)
+
+    p_hydrate = sub.add_parser("hydrate", help="Download artifacts and create symlinks")
+    p_hydrate.add_argument("dir", nargs="?", help="Directory (default: .kit/results)")
+    p_hydrate.set_defaults(func=cmd_hydrate)
+
+    p_status = sub.add_parser("status", help="Show cached/missing status")
+    p_status.add_argument("dir", nargs="?", help="Directory (default: .kit/results)")
+    p_status.set_defaults(func=cmd_status)
+
+    p_verify = sub.add_parser("verify", help="Verify SHA-256 integrity")
+    p_verify.add_argument("dir", nargs="?", help="Directory (default: .kit/results)")
+    p_verify.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
