@@ -24,6 +24,9 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 
 VALID_RUNTIMES=("python" "cpp" "cpp-python")
 
+# Target platform for builds — EC2 instances are x86_64
+BUILD_PLATFORM="${ORCHESTRATION_KIT_DOCKER_PLATFORM:-linux/amd64}"
+
 usage() {
     echo "Usage: $(basename "$0") build [runtime...] [--push] [--ecr-only] [--hub-only]"
     echo ""
@@ -33,6 +36,9 @@ usage() {
     echo "  --push      Push images after building"
     echo "  --ecr-only  Push to ECR only (requires ORCHESTRATION_KIT_ECR_REGISTRY)"
     echo "  --hub-only  Push to DockerHub only"
+    echo ""
+    echo "Platform: Builds for linux/amd64 by default (EC2 target)."
+    echo "  Override: ORCHESTRATION_KIT_DOCKER_PLATFORM=linux/arm64"
     exit 1
 }
 
@@ -87,12 +93,15 @@ build_image() {
 
     echo "=== Building ${runtime} ==="
     echo "  Dockerfile: $dockerfile"
+    echo "  Platform: $BUILD_PLATFORM"
     echo "  Tags: $version_tag, $latest_tag"
 
-    docker build \
+    docker buildx build \
+        --platform "$BUILD_PLATFORM" \
         -f "$dockerfile" \
         -t "${REPO_NAME}:${version_tag}" \
         -t "${REPO_NAME}:${latest_tag}" \
+        --load \
         "$DOCKER_DIR"
 
     echo "  Built: ${REPO_NAME}:${version_tag}"

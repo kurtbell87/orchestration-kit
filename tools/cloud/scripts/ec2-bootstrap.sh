@@ -81,7 +81,13 @@ DOCKER_IMAGE="${DOCKER_IMAGE:-python:3.12-slim}"
 RUNTIME="${RUNTIME:-python}"
 
 # Build pre-command based on runtime
+# Auto-cmake is opt-in: set AUTO_CMAKE=1 env var or create .cloud-build marker file
 PRE_CMD=""
+AUTO_CMAKE="${AUTO_CMAKE:-0}"
+if [ -f "${WORKDIR}/.cloud-build" ]; then
+    AUTO_CMAKE=1
+fi
+
 case "$RUNTIME" in
     python)
         if [ -f "${WORKDIR}/requirements.txt" ]; then
@@ -89,8 +95,8 @@ case "$RUNTIME" in
         fi
         ;;
     cpp)
-        # For cpp runtime, optionally build if CMakeLists.txt present and no build/ dir
-        if [ -f "${WORKDIR}/CMakeLists.txt" ] && [ ! -d "${WORKDIR}/build" ]; then
+        # Auto-cmake only when explicitly requested
+        if [ "$AUTO_CMAKE" = "1" ] && [ -f "${WORKDIR}/CMakeLists.txt" ]; then
             PRE_CMD="mkdir -p /work/build && cd /work/build && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --parallel \$(nproc) && cd /work &&"
         fi
         ;;
@@ -100,7 +106,7 @@ case "$RUNTIME" in
         if [ -f "${WORKDIR}/requirements.txt" ]; then
             PRE_CMD="pip install -q uv && uv pip install --system --no-cache-dir -q -r /work/requirements.txt &&"
         fi
-        if [ -f "${WORKDIR}/CMakeLists.txt" ] && [ ! -d "${WORKDIR}/build" ]; then
+        if [ "$AUTO_CMAKE" = "1" ] && [ -f "${WORKDIR}/CMakeLists.txt" ]; then
             PRE_CMD="${PRE_CMD}mkdir -p /work/build && cd /work/build && cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --parallel \$(nproc) && cd /work &&"
         fi
         ;;
