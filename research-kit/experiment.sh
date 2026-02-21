@@ -202,6 +202,45 @@ if texts:
   return "$exit_code"
 }
 
+sync_results() {
+  # Pull results from cloud/S3 after a remote RUN phase.
+  # No-op if COMPUTE_TARGET is not ec2.
+  local spec_file="$1"
+  local results_path
+  results_path="$(results_dir_for_spec "$spec_file")"
+
+  if [[ "${COMPUTE_TARGET:-local}" != "ec2" ]]; then
+    return 0
+  fi
+
+  echo -e "${CYAN}── Syncing results from cloud... ──${NC}"
+
+  # Try cloud-run pull first (if a run-id marker exists)
+  local cloud_run_id_file="$results_path/.cloud-run-id"
+  if [[ -f "$cloud_run_id_file" ]]; then
+    local cloud_run_id
+    cloud_run_id=$(cat "$cloud_run_id_file")
+    echo -e "  Pulling results for cloud-run: $cloud_run_id"
+    local _okit="${ORCHESTRATION_KIT_ROOT:-orchestration-kit}"
+    "$_okit/tools/cloud-run" pull "$cloud_run_id" --output-dir "$results_path" || {
+      echo -e "${YELLOW}  cloud-run pull failed, trying artifact-store hydrate...${NC}"
+    }
+  fi
+
+  # Fallback: hydrate any S3 artifact symlinks
+  local _okit="${ORCHESTRATION_KIT_ROOT:-orchestration-kit}"
+  if [[ -x "$_okit/tools/artifact-store" ]]; then
+    "$_okit/tools/artifact-store" hydrate 2>/dev/null || true
+  fi
+
+  # Verify results exist
+  if [[ -f "$results_path/metrics.json" ]]; then
+    echo -e "  ${GREEN}Results synced:${NC} $results_path/metrics.json exists"
+  else
+    echo -e "  ${YELLOW}Warning: metrics.json not found in $results_path after sync${NC}"
+  fi
+}
+
 list_experiment_specs() {
   find "$EXPERIMENTS_DIR" -maxdepth 1 -name "*.md" -not -name "survey-*" -type f 2>/dev/null | sort || echo "none"
 }
@@ -535,6 +574,30 @@ If execution is unexpectedly slow or runs into local resource issues, cloud is a
     fi
   fi
 
+  # COMPUTE_TARGET override: if ec2 is mandatory, replace advisory
+  if [[ "${COMPUTE_TARGET:-local}" == "ec2" ]]; then
+    compute_advisory="
+## Compute Directive (MANDATORY — EC2)
+ALL training and heavy computation MUST run on EC2. Do NOT run model training locally.
+
+Use cloud-run to execute the experiment:
+  ${_okit:-orchestration-kit}/tools/cloud-run run \"python <your-script>\" \\
+      --spec $spec_file \\
+      --data-dirs ${DATA_DIR:-data}/ \\
+      --output-dir $results_path/ \\
+      --max-hours ${MAX_GPU_HOURS:-4}
+
+IMPORTANT:
+- Do NOT use --detach. Wait for the run to complete.
+- After cloud-run finishes, pull results:
+    ${_okit:-orchestration-kit}/tools/cloud-run pull <run-id> --output-dir $results_path/
+- Write the cloud-run run-id to $results_path/.cloud-run-id
+- Verify metrics.json exists in $results_path/ before exiting.
+- You may run the MVE (minimal viable experiment) locally for fast iteration,
+  but the FULL experiment (all CPCV splits, all configs) MUST run on EC2.
+- Local-only tasks (data loading verification, normalization checks, small sanity checks) are fine locally."
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
@@ -714,6 +777,7 @@ run_cycle() {
   echo -e "\n${YELLOW}--- Frame complete. Running experiment... ---${NC}\n"
 
   run_run "$spec_file"
+  sync_results "$spec_file"
   echo -e "\n${YELLOW}--- Run complete. Analyzing results... ---${NC}\n"
 
   run_read "$spec_file"
@@ -740,6 +804,7 @@ run_full() {
   echo -e "\n${YELLOW}--- Frame complete. Running experiment... ---${NC}\n"
 
   run_run "$spec_file"
+  sync_results "$spec_file"
   echo -e "\n${YELLOW}--- Run complete. Analyzing results... ---${NC}\n"
 
   run_read "$spec_file"
@@ -1189,6 +1254,7 @@ with open('$PROGRAM_STATE_FILE') as f:
       run_frame "$spec_file"
       echo -e "\n${YELLOW}--- Frame complete. Running experiment... ---${NC}\n"
       run_run "$spec_file"
+      sync_results "$spec_file"
       echo -e "\n${YELLOW}--- Run complete. Analyzing results... ---${NC}\n"
       run_read "$spec_file"
     ) || subshell_exit=$?
