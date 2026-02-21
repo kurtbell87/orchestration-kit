@@ -19,6 +19,7 @@ class InstanceConfig:
     use_spot: bool = True                   # EC2: spot vs on-demand
     env_vars: dict[str, str] = field(default_factory=dict)
     tags: dict[str, str] = field(default_factory=dict)
+    runtime: str = "python"                 # python | cpp | cpp-python
 
     # RunPod-specific
     docker_image: Optional[str] = None

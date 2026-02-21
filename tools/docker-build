@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# docker-build — Build and push orchestration-kit Docker images.
+#
+# Usage:
+#   tools/docker-build build [runtime...]          # Build images (default: all)
+#   tools/docker-build build python --push         # Build and push python image
+#   tools/docker-build build cpp cpp-python --push # Build and push cpp images
+#   tools/docker-build build --ecr-only            # Push to ECR only
+#   tools/docker-build build --hub-only            # Push to DockerHub only
+#
+# Runtimes: python, cpp, cpp-python
+# Tags: <runtime>-<yyyymmdd>-<git-sha> (versioned) + <runtime>-latest (floating)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DOCKER_DIR="$(cd "$SCRIPT_DIR/../docker" && pwd)"
+REPO_NAME="${ORCHESTRATION_KIT_DOCKER_REPO:-orchestration-kit}"
+
+# Registries (set via env or .orchestration-kit.env)
+ECR_REGISTRY="${ORCHESTRATION_KIT_ECR_REGISTRY:-}"
+DOCKERHUB_REGISTRY="${ORCHESTRATION_KIT_DOCKERHUB_REGISTRY:-kenoma-labs}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+
+VALID_RUNTIMES=("python" "cpp" "cpp-python")
+
+# Target platform for builds — EC2 instances are x86_64
+BUILD_PLATFORM="${ORCHESTRATION_KIT_DOCKER_PLATFORM:-linux/amd64}"
+
+usage() {
+    echo "Usage: $(basename "$0") build [runtime...] [--push] [--ecr-only] [--hub-only]"
+    echo ""
+    echo "Runtimes: ${VALID_RUNTIMES[*]}"
+    echo ""
+    echo "Options:"
+    echo "  --push      Push images after building"
+    echo "  --ecr-only  Push to ECR only (requires ORCHESTRATION_KIT_ECR_REGISTRY)"
+    echo "  --hub-only  Push to DockerHub only"
+    echo ""
+    echo "Platform: Builds for linux/amd64 by default (EC2 target)."
+    echo "  Override: ORCHESTRATION_KIT_DOCKER_PLATFORM=linux/arm64"
+    exit 1
+}
+
+ecr_login() {
+    if [ -z "$ECR_REGISTRY" ]; then
+        echo "ERROR: ORCHESTRATION_KIT_ECR_REGISTRY not set" >&2
+        return 1
+    fi
+    echo "Authenticating with ECR..."
+    aws ecr get-login-password --region "$AWS_REGION" | \
+        docker login --username AWS --password-stdin "$ECR_REGISTRY"
+}
+
+ecr_ensure_repo() {
+    local repo="$1"
+    aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" >/dev/null 2>&1 || {
+        echo "Creating ECR repository: $repo"
+        aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION" \
+            --image-scanning-configuration scanOnPush=true >/dev/null
+    }
+}
+
+hub_login() {
+    # Check if already logged in via ~/.docker/config.json
+    if docker info 2>/dev/null | grep -q "Username:"; then
+        return 0
+    fi
+    if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+        echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+    else
+        echo "WARNING: Not logged into DockerHub. Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN or run 'docker login'." >&2
+        return 1
+    fi
+}
+
+build_image() {
+    local runtime="$1"
+    local dockerfile="$DOCKER_DIR/Dockerfile.${runtime}"
+
+    if [ ! -f "$dockerfile" ]; then
+        echo "ERROR: Dockerfile not found: $dockerfile" >&2
+        return 1
+    fi
+
+    # Generate tags
+    local date_tag
+    date_tag="$(date +%Y%m%d)"
+    local git_sha
+    git_sha="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+    local version_tag="${runtime}-${date_tag}-${git_sha}"
+    local latest_tag="${runtime}-latest"
+
+    echo "=== Building ${runtime} ==="
+    echo "  Dockerfile: $dockerfile"
+    echo "  Platform: $BUILD_PLATFORM"
+    echo "  Tags: $version_tag, $latest_tag"
+
+    docker buildx build \
+        --platform "$BUILD_PLATFORM" \
+        -f "$dockerfile" \
+        -t "${REPO_NAME}:${version_tag}" \
+        -t "${REPO_NAME}:${latest_tag}" \
+        --load \
+        "$DOCKER_DIR"
+
+    echo "  Built: ${REPO_NAME}:${version_tag}"
+}
+
+push_image() {
+    local runtime="$1"
+    local push_ecr="$2"
+    local push_hub="$3"
+
+    local date_tag
+    date_tag="$(date +%Y%m%d)"
+    local git_sha
+    git_sha="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+    local version_tag="${runtime}-${date_tag}-${git_sha}"
+    local latest_tag="${runtime}-latest"
+
+    if [ "$push_ecr" = "true" ] && [ -n "$ECR_REGISTRY" ]; then
+        echo "=== Pushing ${runtime} to ECR ==="
+        ecr_ensure_repo "$REPO_NAME"
+
+        docker tag "${REPO_NAME}:${version_tag}" "${ECR_REGISTRY}/${REPO_NAME}:${version_tag}"
+        docker tag "${REPO_NAME}:${latest_tag}" "${ECR_REGISTRY}/${REPO_NAME}:${latest_tag}"
+        docker push "${ECR_REGISTRY}/${REPO_NAME}:${version_tag}"
+        docker push "${ECR_REGISTRY}/${REPO_NAME}:${latest_tag}"
+        echo "  Pushed: ${ECR_REGISTRY}/${REPO_NAME}:${version_tag}"
+    fi
+
+    if [ "$push_hub" = "true" ]; then
+        echo "=== Pushing ${runtime} to DockerHub ==="
+        docker tag "${REPO_NAME}:${version_tag}" "${DOCKERHUB_REGISTRY}/${REPO_NAME}:${version_tag}"
+        docker tag "${REPO_NAME}:${latest_tag}" "${DOCKERHUB_REGISTRY}/${REPO_NAME}:${latest_tag}"
+        docker push "${DOCKERHUB_REGISTRY}/${REPO_NAME}:${version_tag}"
+        docker push "${DOCKERHUB_REGISTRY}/${REPO_NAME}:${latest_tag}"
+        echo "  Pushed: ${DOCKERHUB_REGISTRY}/${REPO_NAME}:${version_tag}"
+    fi
+}
+
+# --- Parse arguments ---
+if [ $# -lt 1 ] || [ "$1" != "build" ]; then
+    usage
+fi
+shift
+
+PUSH=false
+ECR_ONLY=false
+HUB_ONLY=false
+RUNTIMES=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --push)     PUSH=true ;;
+        --ecr-only) PUSH=true; ECR_ONLY=true ;;
+        --hub-only) PUSH=true; HUB_ONLY=true ;;
+        --help|-h)  usage ;;
+        *)
+            # Validate runtime
+            valid=false
+            for r in "${VALID_RUNTIMES[@]}"; do
+                if [ "$1" = "$r" ]; then
+                    valid=true
+                    break
+                fi
+            done
+            if [ "$valid" = "true" ]; then
+                RUNTIMES+=("$1")
+            else
+                echo "ERROR: Unknown argument or runtime: $1" >&2
+                usage
+            fi
+            ;;
+    esac
+    shift
+done
+
+# Default: build all runtimes
+if [ ${#RUNTIMES[@]} -eq 0 ]; then
+    RUNTIMES=("${VALID_RUNTIMES[@]}")
+fi
+
+# Resolve push targets
+PUSH_ECR=false
+PUSH_HUB=false
+if [ "$PUSH" = "true" ]; then
+    if [ "$ECR_ONLY" = "true" ]; then
+        PUSH_ECR=true
+    elif [ "$HUB_ONLY" = "true" ]; then
+        PUSH_HUB=true
+    else
+        PUSH_ECR=true
+        PUSH_HUB=true
+    fi
+fi
+
+# --- Authenticate if pushing ---
+if [ "$PUSH_ECR" = "true" ]; then
+    ecr_login
+fi
+if [ "$PUSH_HUB" = "true" ]; then
+    hub_login || true
+fi
+
+# --- Build ---
+for rt in "${RUNTIMES[@]}"; do
+    build_image "$rt"
+done
+
+# --- Push ---
+if [ "$PUSH" = "true" ]; then
+    for rt in "${RUNTIMES[@]}"; do
+        push_image "$rt" "$PUSH_ECR" "$PUSH_HUB"
+    done
+fi
+
+echo ""
+echo "Done. Built: ${RUNTIMES[*]}"

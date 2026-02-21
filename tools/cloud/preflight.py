@@ -37,7 +37,7 @@ def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
         reason: human-readable explanation
     """
     pref = preference if preference is not None else CLOUD_PREFERENCE
-    base_fields = {"cloud_preference": pref}
+    base_fields = {"cloud_preference": pref, "runtime": profile.runtime}
 
     # GPU workloads → RunPod (always remote, regardless of preference)
     if profile.compute_type == "gpu" or (
@@ -102,7 +102,7 @@ def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
             }
         # Override: send to cloud even though local could handle it
         instance_type = select_ec2_instance(
-            profile.sequential_fits, profile.estimated_rows
+            profile.sequential_fits, profile.estimated_rows, runtime=profile.runtime
         )
         inst = EC2_INSTANCES[instance_type]
         use_spot = should_use_spot(profile.estimated_wall_hours)
@@ -127,7 +127,7 @@ def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
 
     # Not locally feasible — exceeds thresholds → AWS EC2
     instance_type = select_ec2_instance(
-        profile.sequential_fits, profile.estimated_rows
+        profile.sequential_fits, profile.estimated_rows, runtime=profile.runtime
     )
     inst = EC2_INSTANCES[instance_type]
     use_spot = should_use_spot(profile.estimated_wall_hours)
