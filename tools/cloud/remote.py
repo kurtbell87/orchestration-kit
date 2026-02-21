@@ -16,6 +16,9 @@ from .config import (
     POLL_INTERVAL_SECONDS,
     STATE_DIR,
     RESOURCE_TAGS,
+    ECR_REPO_URI,
+    EBS_DATA_SNAPSHOT_ID,
+    IAM_INSTANCE_PROFILE,
 )
 from . import s3 as s3_helper
 from . import state as project_state
@@ -80,6 +83,7 @@ def run(
     tags: Optional[dict[str, str]] = None,
     network_volume_id: Optional[str] = None,
     allow_duplicate: bool = False,
+    image_tag: Optional[str] = None,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -127,12 +131,27 @@ def run(
                     "Use --allow-duplicate to override."
                 )
 
-        # --- 1. Upload code + data ---
-        print(f"[{run_id}] Uploading code to S3...")
-        s3_helper.upload_code(project_root, run_id)
+        # --- 1. Resolve image URI or upload code ---
+        image_uri = None
+        ebs_snapshot_id = None
+        iam_instance_profile = None
+
+        if ECR_REPO_URI and backend_name == "aws":
+            # ECR/EBS path: skip code upload, use pre-built Docker image
+            tag = image_tag or "latest"
+            image_uri = f"{ECR_REPO_URI}:{tag}"
+            ebs_snapshot_id = EBS_DATA_SNAPSHOT_ID or None
+            iam_instance_profile = IAM_INSTANCE_PROFILE or None
+            print(f"[{run_id}] Using ECR image: {image_uri}")
+            if ebs_snapshot_id:
+                print(f"[{run_id}] EBS data snapshot: {ebs_snapshot_id}")
+        else:
+            # Legacy path: upload code tarball to S3
+            print(f"[{run_id}] Uploading code to S3...")
+            s3_helper.upload_code(project_root, run_id)
 
         if data_dirs:
-            print(f"[{run_id}] Uploading data dirs: {data_dirs}")
+            print(f"[{run_id}] Uploading extra data dirs: {data_dirs}")
             s3_helper.upload_dirs(data_dirs, run_id)
 
         # --- 2. Provision instance ---
@@ -147,6 +166,9 @@ def run(
             env_vars=env_vars or {},
             tags={**(tags or {}), "SpecFile": spec_file or ""},
             network_volume_id=network_volume_id,
+            image_uri=image_uri,
+            ebs_snapshot_id=ebs_snapshot_id,
+            iam_instance_profile=iam_instance_profile,
         )
         instance_id = backend.provision(config)
         _update_state(run_id, instance_id=instance_id, status="provisioning")

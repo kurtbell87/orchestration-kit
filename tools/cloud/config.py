@@ -39,6 +39,21 @@ CLOUD_OVERHEAD_FLOOR_HOURS = 0.15  # ~10 minutes
 DEFAULT_MAX_HOURS = 12
 SPOT_MAX_WALL_HOURS = 4.0  # Above this, default to on-demand (spot interruption risk)
 
+# ---------------------------------------------------------------------------
+# ECR / EBS / IAM — Docker-based execution (env-var overridable)
+# ---------------------------------------------------------------------------
+ECR_REPO_URI = os.environ.get("CLOUD_RUN_ECR_REPO_URI", "")
+EBS_DATA_SNAPSHOT_ID = os.environ.get("CLOUD_RUN_EBS_SNAPSHOT_ID", "")
+EBS_DATA_VOLUME_SIZE_GB = int(os.environ.get("CLOUD_RUN_EBS_VOLUME_SIZE_GB", "60"))
+EBS_DATA_DEVICE_NAME = os.environ.get("CLOUD_RUN_EBS_DEVICE_NAME", "/dev/xvdf")
+IAM_INSTANCE_PROFILE = os.environ.get("CLOUD_RUN_IAM_PROFILE", "")
+
+# ECS-optimized Amazon Linux 2023 AMI (Docker pre-installed)
+ECS_OPTIMIZED_AMI_SSM_PARAM = os.environ.get(
+    "CLOUD_RUN_ECS_AMI_SSM_PARAM",
+    "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id",
+)
+
 # S3 paths
 S3_RUNS_PREFIX = "cloud-runs"
 

@@ -25,6 +25,11 @@ class InstanceConfig:
     gpu_type: Optional[str] = None
     network_volume_id: Optional[str] = None
 
+    # EC2 Docker/ECR execution
+    image_uri: Optional[str] = None              # ECR image URI (e.g., 123456.dkr.ecr.us-east-1.amazonaws.com/mbo-dl:abc123)
+    ebs_snapshot_id: Optional[str] = None         # EBS snapshot with pre-loaded data
+    iam_instance_profile: Optional[str] = None    # IAM instance profile name for ECR pull + S3 access
+
     # Set by backend after launch
     launched_at: Optional[str] = None       # ISO 8601 UTC timestamp
 

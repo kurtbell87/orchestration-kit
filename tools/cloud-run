@@ -22,8 +22,10 @@ from pathlib import Path
 # Add tools/ to path so we can import cloud module
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import subprocess
+
 from cloud import remote, s3
-from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER
+from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER, ECR_REPO_URI, AWS_REGION
 from cloud.preflight import check_spec
 from cloud.remote import DuplicateSpecError
 from cloud import state as project_state
@@ -94,6 +96,7 @@ def cmd_run(args):
             env_vars=env_vars,
             network_volume_id=getattr(args, "volume", None),
             allow_duplicate=args.allow_duplicate,
+            image_tag=getattr(args, "image_tag", None),
         )
     except DuplicateSpecError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -264,6 +267,135 @@ def cmd_volume_ls(args):
 
 
 # ---------------------------------------------------------------------------
+# Docker build / push / snapshot commands
+# ---------------------------------------------------------------------------
+
+def _resolve_image_tag(tag: str | None) -> str:
+    """Resolve image tag — defaults to short git SHA."""
+    if tag:
+        return tag
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "latest"
+
+
+def _resolve_ecr_repo() -> str:
+    """Return ECR repo URI or exit with error."""
+    if not ECR_REPO_URI:
+        print("ERROR: CLOUD_RUN_ECR_REPO_URI not set. Run:", file=sys.stderr)
+        print("  export CLOUD_RUN_ECR_REPO_URI=<account>.dkr.ecr.<region>.amazonaws.com/<repo>", file=sys.stderr)
+        sys.exit(1)
+    return ECR_REPO_URI
+
+
+def cmd_build(args):
+    """Build the Docker image for remote execution."""
+    tag = _resolve_image_tag(args.tag)
+    ecr_repo = _resolve_ecr_repo()
+    full_tag = f"{ecr_repo}:{tag}"
+
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+    platform = args.platform or "linux/amd64"
+
+    cmd = ["docker", "buildx", "build", "--platform", platform, "-t", full_tag]
+    if args.no_cache:
+        cmd.append("--no-cache")
+    if args.push:
+        cmd.append("--push")
+    cmd.append(project_root)
+
+    print(f"Building: {full_tag}")
+    print(f"  Platform: {platform}")
+    print(f"  Context:  {project_root}")
+    result = subprocess.run(cmd, cwd=project_root)
+    if result.returncode != 0:
+        print(f"Build failed with exit code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    print(f"\nImage built: {full_tag}")
+    if not args.push:
+        print(f"Push with: cloud-run push --tag {tag}")
+
+
+def cmd_push(args):
+    """Authenticate to ECR and push the Docker image."""
+    tag = _resolve_image_tag(args.tag)
+    ecr_repo = _resolve_ecr_repo()
+    full_tag = f"{ecr_repo}:{tag}"
+
+    # Extract registry hostname from repo URI
+    registry = ecr_repo.split("/")[0]
+
+    # ECR login
+    print(f"Authenticating to ECR: {registry}")
+    login_pw = subprocess.run(
+        ["aws", "ecr", "get-login-password", "--region", AWS_REGION],
+        capture_output=True, text=True, timeout=30,
+    )
+    if login_pw.returncode != 0:
+        print(f"ECR login failed: {login_pw.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    docker_login = subprocess.run(
+        ["docker", "login", "--username", "AWS", "--password-stdin", registry],
+        input=login_pw.stdout, capture_output=True, text=True, timeout=30,
+    )
+    if docker_login.returncode != 0:
+        print(f"Docker login failed: {docker_login.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    # Push
+    print(f"Pushing: {full_tag}")
+    result = subprocess.run(["docker", "push", full_tag])
+    if result.returncode != 0:
+        print(f"Push failed with exit code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+    print(f"\nPushed: {full_tag}")
+
+
+def cmd_snapshot_list(args):
+    """List EBS snapshots tagged with ManagedBy=cloud-run."""
+    result = subprocess.run(
+        [
+            "aws", "ec2", "describe-snapshots",
+            "--filters", "Name=tag:ManagedBy,Values=cloud-run",
+            "--query", "Snapshots[*].{ID:SnapshotId,Size:VolumeSize,State:State,Desc:Description,Date:StartTime}",
+            "--output", "table",
+            "--region", AWS_REGION,
+        ],
+        timeout=30,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+def cmd_snapshot_create(args):
+    """Print manual steps to create an EBS data snapshot."""
+    print("EBS data snapshot creation (one-time manual process):")
+    print()
+    print("1. Launch a temporary EC2 instance with a 60GB gp3 volume")
+    print("2. Attach and mount the volume:")
+    print("     sudo mkfs.ext4 /dev/xvdf && sudo mount /dev/xvdf /data")
+    print("3. Sync MBO data to the volume:")
+    print("     aws s3 sync s3://kenoma-labs-research/DATA/ /data/")
+    print("4. Unmount and create snapshot:")
+    print("     sudo umount /data")
+    print("     aws ec2 create-snapshot --volume-id <vol-id> \\")
+    print("       --description 'MBO MES 2022 dataset' \\")
+    print("       --tag-specifications 'ResourceType=snapshot,Tags=[{Key=ManagedBy,Value=cloud-run},{Key=Project,Value=orchestration-kit}]'")
+    print("5. Set the snapshot ID:")
+    print("     export CLOUD_RUN_EBS_SNAPSHOT_ID=snap-xxxxxxxxx")
+    print("6. Terminate the temporary instance")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -327,6 +459,7 @@ def main():
     p_run.add_argument("--env", action="append", help="Extra env vars (KEY=VALUE), repeatable")
     p_run.add_argument("--volume", help="RunPod network volume ID to mount at /workspace")
     p_run.add_argument("--allow-duplicate", action="store_true", help="Allow launching even if an instance with the same spec is running")
+    p_run.add_argument("--image-tag", help="ECR image tag to use (default: git SHA)")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 
@@ -385,6 +518,28 @@ def main():
     p_vl = vol_sub.add_parser("ls", help="List network volumes")
     p_vl.set_defaults(func=cmd_volume_ls)
 
+    # --- build ---
+    p_build = sub.add_parser("build", help="Build Docker image for remote execution")
+    p_build.add_argument("--tag", help="Image tag (default: git SHA)")
+    p_build.add_argument("--platform", default="linux/amd64", help="Target platform (default: linux/amd64)")
+    p_build.add_argument("--no-cache", action="store_true", help="Build without Docker cache")
+    p_build.add_argument("--push", action="store_true", help="Push to ECR after building")
+    p_build.add_argument("--project-root", help="Project root (default: cwd or $PROJECT_ROOT)")
+    p_build.set_defaults(func=cmd_build)
+
+    # --- push ---
+    p_push = sub.add_parser("push", help="Push Docker image to ECR")
+    p_push.add_argument("--tag", help="Image tag (default: git SHA)")
+    p_push.set_defaults(func=cmd_push)
+
+    # --- snapshot ---
+    p_snap = sub.add_parser("snapshot", help="Manage EBS data snapshots")
+    snap_sub = p_snap.add_subparsers(dest="snap_cmd")
+    p_snap_ls = snap_sub.add_parser("list", help="List EBS snapshots tagged with ManagedBy=cloud-run")
+    p_snap_ls.set_defaults(func=cmd_snapshot_list)
+    p_snap_create = snap_sub.add_parser("create", help="Print manual steps to create an EBS data snapshot")
+    p_snap_create.set_defaults(func=cmd_snapshot_create)
+
     args = parser.parse_args()
 
     if not args.subcmd:
@@ -393,6 +548,10 @@ def main():
 
     if args.subcmd == "volume" and not getattr(args, "vol_cmd", None):
         p_vol.print_help()
+        sys.exit(1)
+
+    if args.subcmd == "snapshot" and not getattr(args, "snap_cmd", None):
+        p_snap.print_help()
         sys.exit(1)
 
     args.func(args)

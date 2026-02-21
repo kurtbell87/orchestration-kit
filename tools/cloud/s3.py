@@ -6,6 +6,7 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,17 @@ def upload_code(project_root: str, run_id: str, *, exclude_patterns: Optional[li
     """Tar project code (respecting .gitignore) and upload to S3.
 
     Returns the S3 URI of the uploaded archive.
+
+    .. deprecated::
+        Use ECR images instead. Set CLOUD_RUN_ECR_REPO_URI to enable
+        Docker-based execution which skips code upload entirely.
     """
+    warnings.warn(
+        "upload_code() is deprecated. Use ECR images instead: "
+        "set CLOUD_RUN_ECR_REPO_URI and run 'cloud-run build && cloud-run push'.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     s3_uri = f"{_s3_prefix(run_id)}/code.tar.gz"
     project = Path(project_root)
 

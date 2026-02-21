@@ -17,10 +17,12 @@ from ..config import (
     RESOURCE_TAGS,
     S3_BUCKET,
     S3_RUNS_PREFIX,
+    EBS_DATA_DEVICE_NAME,
+    ECS_OPTIMIZED_AMI_SSM_PARAM,
 )
 from .base import ComputeBackend, InstanceConfig
 
-# Amazon Linux 2023 AMI lookup via SSM parameter
+# Amazon Linux 2023 AMI lookup via SSM parameter (fallback if ECS-optimized unavailable)
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
 # Bootstrap script template path (relative to this file)
@@ -54,7 +56,7 @@ class AWSBackend(ComputeBackend):
             )
             return existing
 
-        ami_id = self._get_latest_ami()
+        ami_id = self._get_latest_ami(config)
         sg_id = self._ensure_security_group(config.run_id)
         user_data = self._render_user_data(config)
 
@@ -91,11 +93,26 @@ class AWSBackend(ComputeBackend):
             MaxCount=1,
             TagSpecifications=tag_specs,
             ClientToken=client_token,
-            # Auto-terminate when the instance shuts itself down
             InstanceInitiatedShutdownBehavior="terminate",
-            # IAM role for S3 access (if instance profile exists)
-            # IamInstanceProfile={"Name": "..."},  # uncomment if IAM profile is set up
         )
+
+        # IAM instance profile for ECR pull + S3 access
+        if config.iam_instance_profile:
+            launch_kwargs["IamInstanceProfile"] = {"Name": config.iam_instance_profile}
+
+        # EBS data volume from snapshot (pre-loaded dataset)
+        if config.ebs_snapshot_id:
+            device_name = EBS_DATA_DEVICE_NAME
+            launch_kwargs["BlockDeviceMappings"] = [
+                {
+                    "DeviceName": device_name,
+                    "Ebs": {
+                        "SnapshotId": config.ebs_snapshot_id,
+                        "VolumeType": "gp3",
+                        "DeleteOnTermination": True,
+                    },
+                }
+            ]
 
         if config.use_spot:
             launch_kwargs["InstanceMarketOptions"] = {
@@ -257,18 +274,30 @@ class AWSBackend(ComputeBackend):
                     return inst["InstanceId"]
         return None
 
-    def _get_latest_ami(self) -> str:
-        """Get latest Amazon Linux 2023 x86_64 AMI.
+    def _get_latest_ami(self, config: InstanceConfig | None = None) -> str:
+        """Get the best AMI for this run.
 
-        Tries SSM parameter first, falls back to ec2:DescribeImages.
+        If an ECR image is being used, prefer the ECS-optimized AMI (Docker pre-installed).
+        Falls back to standard AL2023 AMI.
         """
+        # Try ECS-optimized AMI first (Docker pre-installed)
+        if config and config.image_uri:
+            try:
+                resp = self._ssm.get_parameter(Name=ECS_OPTIMIZED_AMI_SSM_PARAM)
+                ami_id = resp["Parameter"]["Value"]
+                log.info("Using ECS-optimized AMI: %s", ami_id)
+                return ami_id
+            except Exception:
+                log.warning("ECS-optimized AMI lookup failed, falling back to AL2023")
+
+        # Standard AL2023 AMI
         try:
             resp = self._ssm.get_parameter(Name=AL2023_SSM_PARAM)
             return resp["Parameter"]["Value"]
         except Exception:
             pass
 
-        # Fallback: query EC2 directly
+        # Last resort: query EC2 directly
         resp = self._ec2.describe_images(
             Owners=["amazon"],
             Filters=[
@@ -334,7 +363,6 @@ class AWSBackend(ComputeBackend):
         """Render the bootstrap script with run-specific variables."""
         template = BOOTSTRAP_SCRIPT.read_text()
 
-        # Inject variables at the top of the script
         var_block = "\n".join([
             f'export RUN_ID="{config.run_id}"',
             f'export S3_BUCKET="{S3_BUCKET}"',
@@ -344,19 +372,25 @@ class AWSBackend(ComputeBackend):
             f'export MAX_HOURS="{config.max_hours}"',
         ])
 
-        # Forward local AWS credentials so the instance can access S3.
-        # This is needed when no IAM instance profile is attached.
-        import boto3 as _boto3
-        _session = _boto3.Session()
-        _creds = _session.get_credentials()
-        if _creds:
-            _frozen = _creds.get_frozen_credentials()
-            var_block += f'\nexport AWS_ACCESS_KEY_ID="{_frozen.access_key}"'
-            var_block += f'\nexport AWS_SECRET_ACCESS_KEY="{_frozen.secret_key}"'
-            if _frozen.token:
-                var_block += f'\nexport AWS_SESSION_TOKEN="{_frozen.token}"'
+        # ECR image URI and EBS device for Docker-based execution
+        if config.image_uri:
+            var_block += f'\nexport IMAGE_URI="{config.image_uri}"'
+        if config.ebs_snapshot_id:
+            var_block += f'\nexport EBS_DATA_DEVICE="{EBS_DATA_DEVICE_NAME}"'
 
-        # Add any extra env vars
+        # Only forward AWS credentials when no IAM instance profile is attached
+        if not config.iam_instance_profile:
+            import boto3 as _boto3
+            _session = _boto3.Session()
+            _creds = _session.get_credentials()
+            if _creds:
+                _frozen = _creds.get_frozen_credentials()
+                var_block += f'\nexport AWS_ACCESS_KEY_ID="{_frozen.access_key}"'
+                var_block += f'\nexport AWS_SECRET_ACCESS_KEY="{_frozen.secret_key}"'
+                if _frozen.token:
+                    var_block += f'\nexport AWS_SESSION_TOKEN="{_frozen.token}"'
+
+        # Extra env vars
         for k, v in config.env_vars.items():
             var_block += f'\nexport {k}="{v}"'
 
