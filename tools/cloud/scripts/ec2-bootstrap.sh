@@ -11,7 +11,7 @@ set -euo pipefail
 LOGFILE="/var/log/experiment.log"
 S3_BASE="s3://${S3_BUCKET}/${S3_PREFIX}"
 
-trap '_ec=${FINAL_EXIT_CODE:-$?}; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
+trap '_ec=${FINAL_EXIT_CODE:-$?}; aws s3 cp "$LOGFILE" "${S3_BASE}/experiment.log" --region "$AWS_DEFAULT_REGION" 2>/dev/null; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
 
 exec > >(tee -a "$LOGFILE") 2>&1
 echo "=== Bootstrap start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
@@ -21,22 +21,35 @@ echo "RUN_ID=$RUN_ID  IMAGE_URI=$IMAGE_URI  MAX_HOURS=$MAX_HOURS"
 echo "started" | aws s3 cp - "${S3_BASE}/status" --region "$AWS_DEFAULT_REGION"
 
 # 2. Mount EBS data volume
+# Nitro instances map /dev/xvdf to /dev/nvme*n1 — find the actual device
 echo "=== Mounting EBS data volume ==="
-for i in $(seq 1 30); do [ -b "$EBS_DATA_DEVICE" ] && break; sleep 2; done
+DATA_DEVICE="$EBS_DATA_DEVICE"
+for i in $(seq 1 30); do
+    [ -b "$DATA_DEVICE" ] && break
+    # Fallback: find non-root NVMe device (root is nvme0n1)
+    for dev in /dev/nvme1n1 /dev/nvme2n1 /dev/xvdf; do
+        [ -b "$dev" ] && DATA_DEVICE="$dev" && break 2
+    done
+    sleep 2
+done
 mkdir -p /data
-mount -o ro "$EBS_DATA_DEVICE" /data
-echo "Mounted $EBS_DATA_DEVICE at /data ($(df -h /data | tail -1 | awk '{print $3}') used)"
+mount -o ro "$DATA_DEVICE" /data
+echo "Mounted $DATA_DEVICE at /data ($(df -h /data | tail -1 | awk '{print $3}') used)"
 
 # 3. ECR login (IAM instance profile provides auth)
 REGISTRY=$(echo "$IMAGE_URI" | cut -d/ -f1)
 aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
-# 4. Pull image
+# 4. Pull image (retry up to 3 times — ECR can have transient timeouts)
 echo "=== Pulling $IMAGE_URI ==="
-docker pull "$IMAGE_URI"
+for attempt in 1 2 3; do
+    docker pull "$IMAGE_URI" && break
+    echo "Pull attempt $attempt failed, retrying in 10s..."
+    sleep 10
+done
 
 # 5. Watchdog
-MAX_SECONDS=$(echo "$MAX_HOURS * 3600" | bc | cut -d. -f1)
+MAX_SECONDS=$(awk "BEGIN{printf \"%d\", $MAX_HOURS * 3600}")
 (
     sleep "$MAX_SECONDS"
     echo "=== WATCHDOG: ${MAX_HOURS}h reached ==="
