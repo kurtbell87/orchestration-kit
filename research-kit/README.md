@@ -70,6 +70,17 @@ READ verdicts are explicit:
 - `REFUTED`
 - `INCONCLUSIVE`
 
+## Cloud Execution (EC2)
+
+When `COMPUTE_TARGET=ec2` is set in `.orchestration-kit.env`:
+
+- The RUN phase injects a **mandatory** cloud-run directive (not advisory) into the sub-agent prompt
+- `sync_results()` runs automatically between RUN and READ in `cycle`, `full`, and `program` commands
+- Results are pulled from cloud-run (by run-id) with S3 artifact-store hydration as fallback
+- When `COMPUTE_TARGET=local` (or unset), behavior is unchanged (backward compatible)
+
+No new CLI flags or commands — this is entirely env-var driven.
+
 ## Configuration
 
 Set in `experiment.sh`:

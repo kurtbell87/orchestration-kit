@@ -215,20 +215,20 @@ sync_results() {
 
   echo -e "${CYAN}── Syncing results from cloud... ──${NC}"
 
+  local _okit="${ORCHESTRATION_KIT_ROOT:-orchestration-kit}"
+
   # Try cloud-run pull first (if a run-id marker exists)
   local cloud_run_id_file="$results_path/.cloud-run-id"
   if [[ -f "$cloud_run_id_file" ]]; then
     local cloud_run_id
     cloud_run_id=$(cat "$cloud_run_id_file")
     echo -e "  Pulling results for cloud-run: $cloud_run_id"
-    local _okit="${ORCHESTRATION_KIT_ROOT:-orchestration-kit}"
     "$_okit/tools/cloud-run" pull "$cloud_run_id" --output-dir "$results_path" || {
       echo -e "${YELLOW}  cloud-run pull failed, trying artifact-store hydrate...${NC}"
     }
   fi
 
   # Fallback: hydrate any S3 artifact symlinks
-  local _okit="${ORCHESTRATION_KIT_ROOT:-orchestration-kit}"
   if [[ -x "$_okit/tools/artifact-store" ]]; then
     "$_okit/tools/artifact-store" hydrate 2>/dev/null || true
   fi
