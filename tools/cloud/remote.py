@@ -84,6 +84,7 @@ def run(
     network_volume_id: Optional[str] = None,
     allow_duplicate: bool = False,
     image_tag: Optional[str] = None,
+    gpu_mode: bool = False,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -136,7 +137,15 @@ def run(
         ebs_snapshot_id = None
         iam_instance_profile = None
 
-        if ECR_REPO_URI and backend_name == "aws":
+        if gpu_mode and backend_name == "aws":
+            # GPU mode: no Docker, run directly on PyTorch DL AMI
+            image_uri = None
+            ebs_snapshot_id = EBS_DATA_SNAPSHOT_ID or None
+            iam_instance_profile = IAM_INSTANCE_PROFILE or None
+            print(f"[{run_id}] GPU mode: PyTorch Deep Learning AMI (no Docker)")
+            if ebs_snapshot_id:
+                print(f"[{run_id}] EBS data snapshot: {ebs_snapshot_id}")
+        elif ECR_REPO_URI and backend_name == "aws":
             # ECR/EBS path: skip code upload, use pre-built Docker image
             tag = image_tag or "latest"
             image_uri = f"{ECR_REPO_URI}:{tag}"
@@ -169,6 +178,7 @@ def run(
             image_uri=image_uri,
             ebs_snapshot_id=ebs_snapshot_id,
             iam_instance_profile=iam_instance_profile,
+            gpu_mode=gpu_mode,
         )
         instance_id = backend.provision(config)
         _update_state(run_id, instance_id=instance_id, status="provisioning")

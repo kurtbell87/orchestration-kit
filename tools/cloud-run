@@ -41,9 +41,11 @@ def cmd_run(args):
     backend_name = args.backend
     instance_type = args.instance_type
     use_spot = not args.on_demand
+    preflight_gpu_mode = False
 
     if spec_file and (not backend_name or not instance_type):
         pf = check_spec(spec_file)
+        preflight_gpu_mode = pf.get("gpu_mode", False)
         if not backend_name:
             if pf["recommendation"] == "local":
                 print(f"Preflight says local execution is sufficient: {pf['reason']}")
@@ -57,6 +59,15 @@ def cmd_run(args):
             instance_type = pf.get("instance_type", "c7a.8xlarge")
         if "use_spot" in pf and pf["recommendation"] != "local":
             use_spot = pf["use_spot"] and not args.on_demand
+
+    # GPU mode: explicit --gpu flag OR auto-detected from preflight (model_type=pytorch)
+    gpu_mode = getattr(args, "gpu", False) or preflight_gpu_mode
+    if preflight_gpu_mode and not getattr(args, "gpu", False):
+        print(f"Auto-detected GPU mode from spec (model_type=pytorch)")
+    if gpu_mode:
+        backend_name = "aws"
+        if not instance_type or instance_type in ("c7a.8xlarge", "g5.xlarge"):
+            instance_type = "g5.xlarge"
 
     # Defaults if still not set
     backend_name = backend_name or "aws"
@@ -74,6 +85,29 @@ def cmd_run(args):
         for e in args.env:
             k, _, v = e.partition("=")
             env_vars[k] = v
+
+    # --- Pre-launch: verify Docker image exists in ECR (skip in GPU mode) ---
+    if backend_name == "aws" and ECR_REPO_URI and not args.dry_run and not gpu_mode:
+        _tag = getattr(args, "image_tag", None) or "latest"
+        _repo_name = ECR_REPO_URI.split("/")[-1]  # e.g. "mbo-dl" from full URI
+        try:
+            _check = subprocess.run(
+                ["aws", "ecr", "batch-get-image",
+                 "--repository-name", _repo_name,
+                 "--image-ids", f"imageTag={_tag}",
+                 "--region", AWS_REGION,
+                 "--query", "images[0].imageId.imageTag",
+                 "--output", "text"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if _check.returncode != 0 or _check.stdout.strip() in ("None", ""):
+                print(f"ERROR: Docker image {_repo_name}:{_tag} not found in ECR.", file=sys.stderr)
+                print(f"  Available tags: run 'aws ecr list-images --repository-name {_repo_name} --region {AWS_REGION}'", file=sys.stderr)
+                print(f"  Build and push: 'cloud-run build --push' or 'tools/docker-build build python --push'", file=sys.stderr)
+                sys.exit(1)
+            print(f"ECR image verified: {_repo_name}:{_tag}")
+        except subprocess.TimeoutExpired:
+            print("WARNING: ECR image check timed out, proceeding anyway", file=sys.stderr)
 
     # Instantiate backend (deferred for dry-run — no SDK needed)
     backend = None if args.dry_run else _get_backend(backend_name)
@@ -97,6 +131,7 @@ def cmd_run(args):
             network_volume_id=getattr(args, "volume", None),
             allow_duplicate=args.allow_duplicate,
             image_tag=getattr(args, "image_tag", None),
+            gpu_mode=gpu_mode,
         )
     except DuplicateSpecError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -300,11 +335,14 @@ def cmd_build(args):
     tag = _resolve_image_tag(args.tag)
     ecr_repo = _resolve_ecr_repo()
     full_tag = f"{ecr_repo}:{tag}"
+    latest_tag = f"{ecr_repo}:latest"
 
     project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
     platform = args.platform or "linux/amd64"
 
-    cmd = ["docker", "buildx", "build", "--platform", platform, "-t", full_tag]
+    # Always dual-tag: requested tag + latest
+    cmd = ["docker", "buildx", "build", "--platform", platform,
+           "-t", full_tag, "-t", latest_tag]
     if args.no_cache:
         cmd.append("--no-cache")
     if args.push:
@@ -312,6 +350,8 @@ def cmd_build(args):
     cmd.append(project_root)
 
     print(f"Building: {full_tag}")
+    if tag != "latest":
+        print(f"  Also tagging as: {latest_tag}")
     print(f"  Platform: {platform}")
     print(f"  Context:  {project_root}")
     result = subprocess.run(cmd, cwd=project_root)
@@ -329,6 +369,7 @@ def cmd_push(args):
     tag = _resolve_image_tag(args.tag)
     ecr_repo = _resolve_ecr_repo()
     full_tag = f"{ecr_repo}:{tag}"
+    latest_tag = f"{ecr_repo}:latest"
 
     # Extract registry hostname from repo URI
     registry = ecr_repo.split("/")[0]
@@ -351,13 +392,25 @@ def cmd_push(args):
         print(f"Docker login failed: {docker_login.stderr}", file=sys.stderr)
         sys.exit(1)
 
-    # Push
+    # Push the requested tag
     print(f"Pushing: {full_tag}")
     result = subprocess.run(["docker", "push", full_tag])
     if result.returncode != 0:
         print(f"Push failed with exit code {result.returncode}", file=sys.stderr)
         sys.exit(result.returncode)
-    print(f"\nPushed: {full_tag}")
+    print(f"  Pushed: {full_tag}")
+
+    # Always also push :latest so ec2-bootstrap default works
+    if tag != "latest":
+        print(f"Tagging and pushing: {latest_tag}")
+        subprocess.run(["docker", "tag", full_tag, latest_tag], check=True)
+        result = subprocess.run(["docker", "push", latest_tag])
+        if result.returncode != 0:
+            print(f"WARNING: Failed to push {latest_tag} (non-fatal)", file=sys.stderr)
+        else:
+            print(f"  Pushed: {latest_tag}")
+
+    print(f"\nDone. Image available as {full_tag} and {latest_tag}")
 
 
 def cmd_snapshot_list(args):
@@ -460,6 +513,7 @@ def main():
     p_run.add_argument("--volume", help="RunPod network volume ID to mount at /workspace")
     p_run.add_argument("--allow-duplicate", action="store_true", help="Allow launching even if an instance with the same spec is running")
     p_run.add_argument("--image-tag", help="ECR image tag to use (default: git SHA)")
+    p_run.add_argument("--gpu", action="store_true", help="Use GPU instance with PyTorch Deep Learning AMI (no Docker)")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 

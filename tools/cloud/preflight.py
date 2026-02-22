@@ -39,10 +39,35 @@ def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
     pref = preference if preference is not None else CLOUD_PREFERENCE
     base_fields = {"cloud_preference": pref, "runtime": profile.runtime}
 
-    # GPU workloads → RunPod (always remote, regardless of preference)
-    if profile.compute_type == "gpu" or (
+    # PyTorch workloads → AWS GPU with PyTorch Deep Learning AMI (no Docker)
+    if "pytorch" in profile.model_type or profile.compute_type == "gpu" or (
         profile.gpu_type and profile.gpu_type not in ("none", "")
     ):
+        # Default to AWS g5.xlarge (A10G 24GB) for PyTorch workloads
+        gpu_instance = "g5.xlarge"
+        if gpu_instance in EC2_INSTANCES:
+            inst = EC2_INSTANCES[gpu_instance]
+            use_spot = should_use_spot(profile.estimated_wall_hours)
+            hours = max(profile.estimated_wall_hours, 0.5)
+            est_cost_spot = inst["cost_spot"] * hours
+            est_cost_od = inst["cost_ondemand"] * hours
+            return {
+                **base_fields,
+                "recommendation": "remote",
+                "preference_override": False,
+                "backend": "aws",
+                "instance_type": gpu_instance,
+                "vcpus": inst["vcpus"],
+                "memory_gb": inst["memory_gb"],
+                "vram_gb": 24,
+                "gpu_mode": True,
+                "cost_per_hour_spot": inst["cost_spot"],
+                "cost_per_hour_ondemand": inst["cost_ondemand"],
+                "estimated_total_cost": f"${est_cost_spot:.2f} (spot) – ${est_cost_od:.2f} (on-demand)",
+                "use_spot": use_spot,
+                "reason": _gpu_reason_aws(profile, gpu_instance, inst),
+            }
+        # Fallback to RunPod if g5 not in catalog
         gpu_info = select_runpod_gpu(profile.gpu_type)
         est_cost = gpu_info["cost_per_hour"] * max(profile.estimated_wall_hours, 0.5)
         return {
@@ -54,6 +79,7 @@ def check(profile: ComputeProfile, preference: Optional[str] = None) -> dict:
             "vcpus": None,
             "memory_gb": None,
             "vram_gb": gpu_info["vram_gb"],
+            "gpu_mode": False,
             "cost_per_hour": gpu_info["cost_per_hour"],
             "estimated_total_cost": f"${est_cost:.2f}",
             "use_spot": False,
@@ -222,6 +248,20 @@ def _preference_override_reason(
         f"Cloud preference '{pref}': {detail}. "
         f"Could run locally but cloud is faster (~{inst['vcpus'] // 12}x vCPUs). "
         f"Recommended: {instance_type} ({inst['vcpus']} vCPU, {inst['memory_gb']} GB)"
+    )
+
+
+def _gpu_reason_aws(profile: ComputeProfile, instance_type: str, inst: dict) -> str:
+    parts = []
+    if profile.model_type and profile.model_type != "other":
+        parts.append(f"{profile.model_type} workload")
+    if profile.estimated_wall_hours:
+        parts.append(f"est. {profile.estimated_wall_hours}h")
+    detail = ", ".join(parts) if parts else "GPU required"
+    return (
+        f"GPU workload ({detail}). "
+        f"Using PyTorch DL AMI on {instance_type} "
+        f"({inst.get('gpu', 'GPU')}, {inst['vcpus']} vCPU, {inst['memory_gb']} GB)"
     )
 
 

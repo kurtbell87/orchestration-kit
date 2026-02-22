@@ -31,6 +31,9 @@ class InstanceConfig:
     ebs_snapshot_id: Optional[str] = None         # EBS snapshot with pre-loaded data
     iam_instance_profile: Optional[str] = None    # IAM instance profile name for ECR pull + S3 access
 
+    # GPU / Deep Learning AMI execution (no Docker)
+    gpu_mode: bool = False                        # Use PyTorch DL AMI instead of Docker/ECR
+
     # Set by backend after launch
     launched_at: Optional[str] = None       # ISO 8601 UTC timestamp
 

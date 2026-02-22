@@ -25,8 +25,12 @@ from .base import ComputeBackend, InstanceConfig
 # Amazon Linux 2023 AMI lookup via SSM parameter (fallback if ECS-optimized unavailable)
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
-# Bootstrap script template path (relative to this file)
+# Bootstrap script template paths (relative to this file)
 BOOTSTRAP_SCRIPT = Path(__file__).parent.parent / "scripts" / "ec2-bootstrap.sh"
+BOOTSTRAP_SCRIPT_GPU = Path(__file__).parent.parent / "scripts" / "ec2-bootstrap-gpu.sh"
+
+# PyTorch Deep Learning AMI pattern for GPU instances (no Docker needed)
+PYTORCH_DL_AMI_PATTERN = "Deep Learning OSS Nvidia Driver AMI GPU PyTorch * (Ubuntu 24.04) *"
 
 
 class AWSBackend(ComputeBackend):
@@ -100,19 +104,33 @@ class AWSBackend(ComputeBackend):
         if config.iam_instance_profile:
             launch_kwargs["IamInstanceProfile"] = {"Name": config.iam_instance_profile}
 
+        # Block device mappings: root volume expansion + optional EBS data volume
+        block_devices = []
+
+        # GPU mode: expand root volume (DL AMI default is 20GB, need more for conda + data)
+        if config.gpu_mode:
+            block_devices.append({
+                "DeviceName": "/dev/sda1",
+                "Ebs": {
+                    "VolumeSize": 100,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            })
+
         # EBS data volume from snapshot (pre-loaded dataset)
         if config.ebs_snapshot_id:
-            device_name = EBS_DATA_DEVICE_NAME
-            launch_kwargs["BlockDeviceMappings"] = [
-                {
-                    "DeviceName": device_name,
-                    "Ebs": {
-                        "SnapshotId": config.ebs_snapshot_id,
-                        "VolumeType": "gp3",
-                        "DeleteOnTermination": True,
-                    },
-                }
-            ]
+            block_devices.append({
+                "DeviceName": EBS_DATA_DEVICE_NAME,
+                "Ebs": {
+                    "SnapshotId": config.ebs_snapshot_id,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            })
+
+        if block_devices:
+            launch_kwargs["BlockDeviceMappings"] = block_devices
 
         if config.use_spot:
             launch_kwargs["InstanceMarketOptions"] = {
@@ -277,9 +295,29 @@ class AWSBackend(ComputeBackend):
     def _get_latest_ami(self, config: InstanceConfig | None = None) -> str:
         """Get the best AMI for this run.
 
-        If an ECR image is being used, prefer the ECS-optimized AMI (Docker pre-installed).
-        Falls back to standard AL2023 AMI.
+        GPU mode: PyTorch Deep Learning AMI (no Docker needed).
+        Docker mode: ECS-optimized AMI (Docker pre-installed).
+        Fallback: standard AL2023 AMI.
         """
+        # GPU mode: find latest PyTorch Deep Learning AMI
+        if config and config.gpu_mode:
+            resp = self._ec2.describe_images(
+                Owners=["amazon"],
+                Filters=[
+                    {"Name": "name", "Values": [PYTORCH_DL_AMI_PATTERN]},
+                    {"Name": "state", "Values": ["available"]},
+                    {"Name": "architecture", "Values": ["x86_64"]},
+                ],
+            )
+            images = sorted(resp["Images"], key=lambda i: i["CreationDate"])
+            if not images:
+                raise RuntimeError(
+                    f"No PyTorch Deep Learning AMI found matching: {PYTORCH_DL_AMI_PATTERN}"
+                )
+            ami_id = images[-1]["ImageId"]
+            log.info("Using PyTorch DL AMI: %s (%s)", ami_id, images[-1]["Name"])
+            return ami_id
+
         # Try ECS-optimized AMI first (Docker pre-installed)
         if config and config.image_uri:
             try:
@@ -361,7 +399,8 @@ class AWSBackend(ComputeBackend):
 
     def _render_user_data(self, config: InstanceConfig) -> str:
         """Render the bootstrap script with run-specific variables."""
-        template = BOOTSTRAP_SCRIPT.read_text()
+        script_path = BOOTSTRAP_SCRIPT_GPU if config.gpu_mode else BOOTSTRAP_SCRIPT
+        template = script_path.read_text()
 
         var_block = "\n".join([
             f'export RUN_ID="{config.run_id}"',

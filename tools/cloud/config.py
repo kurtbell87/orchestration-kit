@@ -107,6 +107,13 @@ RESOURCE_TAGS = {
 # EC2 instance catalog
 # ---------------------------------------------------------------------------
 EC2_INSTANCES = {
+    "g5.xlarge": {
+        "vcpus": 4,
+        "memory_gb": 16,
+        "gpu": "NVIDIA A10G 24GB",
+        "cost_ondemand": 1.01,
+        "cost_spot": 0.44,
+    },
     "c7a.4xlarge": {
         "vcpus": 16,
         "memory_gb": 32,
