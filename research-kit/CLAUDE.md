@@ -1,3 +1,7 @@
+@.kit/docs/research-engineering-practices.md
+@.kit/RESEARCH_LOG.md
+@.kit/QUESTIONS.md
+
 ## Current State (updated YYYY-MM-DD)
 
 - **Infrastructure:** _e.g., Training pipeline working. Eval metrics implemented._

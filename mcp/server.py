@@ -8,6 +8,8 @@ import datetime as dt
 import json
 import os
 import signal
+import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -339,6 +341,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "kit.gc",
+        "description": "Garbage-collect stale runs. Re-indexes from events.jsonl on disk, then marks any 'running' run whose PID is dead as failed (exit_code=137). Returns counts of cleaned runs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "If true, report stale runs without modifying the database (default: false)",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -348,7 +364,6 @@ class MasterKitFacade:
         self.root = config.root
         self._lock = threading.Lock()
         self._background: dict[str, subprocess.Popen[bytes]] = {}
-        self._dashboard_ensured = False
 
     def _tool_path(self, name: str) -> Path:
         return self.root / "tools" / name
@@ -381,25 +396,60 @@ class MasterKitFacade:
             timeout=timeout_seconds,
         )
 
-    # --- Dashboard helpers ---
+    # --- SQLite direct access (replaces fragile dashboard HTTP proxy) ---
 
-    def _ensure_dashboard(self) -> None:
-        if self._dashboard_ensured:
-            return
+    def _db_path(self) -> Path:
+        raw = os.getenv("ORCHESTRATION_KIT_DASHBOARD_HOME")
+        if raw:
+            return Path(raw).expanduser().resolve() / "state.db"
+        return Path.home() / ".orchestration-kit-dashboard" / "state.db"
+
+    def _db_connect(self) -> sqlite3.Connection:
+        db = self._db_path()
+        if not db.is_file():
+            # Trigger an index so the DB exists
+            self._run_cmd(
+                [str(self._tool_path("dashboard")), "index"],
+                timeout_seconds=30,
+            )
+        conn = sqlite3.connect(str(db), timeout=5)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _db_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        conn = self._db_connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def _db_query_one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+        conn = self._db_connect()
+        try:
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def _db_execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        conn = self._db_connect()
+        try:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def _reindex(self) -> None:
+        """Re-index dashboard DB from events.jsonl files on disk."""
         try:
             self._run_cmd(
-                [str(self._tool_path("dashboard")), "ensure-service", "--wait-seconds", "3"],
-                timeout_seconds=15,
+                [str(self._tool_path("dashboard")), "index"],
+                timeout_seconds=60,
             )
         except Exception:
             pass  # best effort
-        self._dashboard_ensured = True
-
-    def _dashboard_get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        qs = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v is not None})
-        url = f"{self.config.dashboard_url}{path}{'?' + qs if qs else ''}"
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            return json.loads(resp.read())
 
     # --- Fire-and-forget background launcher ---
 
@@ -457,29 +507,176 @@ class MasterKitFacade:
     def _tool_kit_math(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._launch_background("math", "full", [require_str(payload, "spec_path")])
 
-    # --- Dashboard query tool handlers (synchronous) ---
+    # --- Dashboard query tool handlers (synchronous, direct SQLite) ---
 
     def _tool_kit_status(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_dashboard()
-        return self._dashboard_get("/api/summary", {})
+        runs = self._db_query_one(
+            """
+            SELECT
+              COUNT(*) AS total_runs,
+              SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_runs,
+              SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_runs,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_runs
+            FROM runs
+            """
+        ) or {}
+
+        reqs = self._db_query_one(
+            """
+            SELECT
+              COUNT(*) AS total_requests,
+              SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok_requests,
+              SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_requests,
+              SUM(CASE WHEN status = 'failed' OR status IS NULL THEN 1 ELSE 0 END) AS failed_requests
+            FROM requests
+            """
+        ) or {}
+
+        active_by_phase = self._db_query(
+            """
+            SELECT
+              COALESCE(kit, 'unknown') AS kit,
+              COALESCE(phase, 'unknown') AS phase,
+              COUNT(*) AS count
+            FROM runs
+            WHERE status = 'running'
+            GROUP BY COALESCE(kit, 'unknown'), COALESCE(phase, 'unknown')
+            ORDER BY count DESC, kit ASC, phase ASC
+            """
+        )
+
+        return {
+            "summary": {
+                "runs": runs,
+                "requests": reqs,
+                "active_by_phase": active_by_phase,
+            }
+        }
 
     def _tool_kit_runs(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_dashboard()
-        return self._dashboard_get("/api/runs", {
-            "status": payload.get("status"),
-            "kit": payload.get("kit"),
-            "phase": payload.get("phase"),
-            "limit": payload.get("limit", 50),
-        })
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        status = payload.get("status")
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        kit = payload.get("kit")
+        if kit:
+            clauses.append("kit = ?")
+            params.append(kit)
+        phase = payload.get("phase")
+        if phase:
+            clauses.append("phase = ?")
+            params.append(phase)
+
+        limit = payload.get("limit", 50)
+        if not isinstance(limit, int) or limit < 1:
+            limit = 50
+        limit = min(limit, 200)
+
+        where = ""
+        if clauses:
+            where = "WHERE " + " AND ".join(clauses)
+
+        params.extend([limit, 0])
+        rows = self._db_query(
+            f"""
+            SELECT
+              project_id, run_id, parent_run_id, kit, phase, status,
+              started_at, finished_at, exit_code, cwd, project_root,
+              orchestration_kit_root, agent_runtime, host, pid,
+              capsule_path, manifest_path, log_path, events_path,
+              reasoning, experiment_name, verdict
+            FROM runs
+            {where}
+            ORDER BY COALESCE(started_at, '') DESC, run_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+
+        # Post-process: add duration_seconds, is_stale, is_orphaned
+        now = dt.datetime.now(dt.timezone.utc)
+        local_hostname = socket.gethostname()
+        for row in rows:
+            started = row.get("started_at")
+            finished = row.get("finished_at")
+            duration = None
+            if started:
+                try:
+                    start_dt = dt.datetime.fromisoformat(started.replace("Z", "+00:00"))
+                    end_dt = (
+                        dt.datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                        if finished
+                        else now
+                    )
+                    duration = max(0, int((end_dt - start_dt).total_seconds()))
+                except (ValueError, TypeError):
+                    pass
+            row["duration_seconds"] = duration
+            row["is_stale"] = (
+                row.get("status") == "running"
+                and duration is not None
+                and duration > 1800
+            )
+
+            is_orphaned = False
+            if (
+                row.get("status") == "running"
+                and row.get("pid")
+                and row.get("host") == local_hostname
+            ):
+                try:
+                    os.kill(int(row["pid"]), 0)
+                except ProcessLookupError:
+                    is_orphaned = True
+                except (PermissionError, OSError, TypeError, ValueError):
+                    pass
+            row["is_orphaned"] = is_orphaned
+
+        return {"runs": rows, "limit": limit, "offset": 0, "has_more": len(rows) == limit}
 
     def _tool_kit_capsule(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_dashboard()
         run_id = require_str(payload, "run_id")
-        result = self._dashboard_get("/api/capsule-preview", {"run_id": run_id})
-        if isinstance(result.get("capsule"), dict) and "text" in result["capsule"]:
-            result["capsule"]["text"] = cap_text_bytes(
-                result["capsule"]["text"], self.config.max_output_bytes
-            )
+
+        run = self._db_query_one(
+            "SELECT capsule_path, manifest_path, log_path, events_path, orchestration_kit_root, project_root FROM runs WHERE run_id = ?",
+            (run_id,),
+        )
+        if run is None:
+            raise MCPToolError(f"run not found: {run_id}")
+
+        result: dict[str, Any] = {"run_id": run_id}
+
+        # Read capsule file directly
+        capsule_path = run.get("capsule_path")
+        if capsule_path:
+            ok_root = Path(run.get("orchestration_kit_root", str(self.root)))
+            resolved = Path(capsule_path)
+            if not resolved.is_absolute():
+                resolved = ok_root / resolved
+            if resolved.is_file():
+                try:
+                    text = resolved.read_text(encoding="utf-8", errors="replace")
+                    result["capsule"] = {
+                        "path": capsule_path,
+                        "text": cap_text_bytes(text, self.config.max_output_bytes),
+                    }
+                except OSError:
+                    result["capsule"] = None
+            else:
+                result["capsule"] = None
+        else:
+            result["capsule"] = None
+
+        result["artifact_paths"] = {
+            "capsule": run.get("capsule_path"),
+            "manifest": run.get("manifest_path"),
+            "log": run.get("log_path"),
+            "events": run.get("events_path"),
+        }
+
         return result
 
     def _tool_kit_research_status(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -547,6 +744,82 @@ class MasterKitFacade:
             "result": "signal_sent",
             "signal": sig_name,
             "pid": proc.pid,
+        }
+
+    # --- GC tool handler ---
+
+    def _tool_kit_gc(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Garbage-collect stale runs: re-index, then mark orphans as failed."""
+        dry_run = payload.get("dry_run", False)
+
+        # Step 1: Re-index from disk events.jsonl to pick up any run_finished events
+        self._reindex()
+
+        # Step 2: Find all "running" runs and check if their PIDs are alive
+        local_hostname = socket.gethostname()
+        running = self._db_query(
+            "SELECT project_id, run_id, pid, host, started_at FROM runs WHERE status = 'running'"
+        )
+
+        stale: list[dict[str, Any]] = []
+        now = dt.datetime.now(dt.timezone.utc)
+
+        for row in running:
+            pid = row.get("pid")
+            host = row.get("host")
+            reason = None
+
+            # Check if PID is dead (local runs only)
+            if pid and host == local_hostname:
+                try:
+                    os.kill(int(pid), 0)
+                except ProcessLookupError:
+                    reason = "pid_dead"
+                except (PermissionError, OSError, TypeError, ValueError):
+                    pass  # process exists or can't check
+
+            # Check if run is ancient (>2 hours with no PID info = likely stale)
+            if reason is None and row.get("started_at"):
+                try:
+                    start_dt = dt.datetime.fromisoformat(
+                        row["started_at"].replace("Z", "+00:00")
+                    )
+                    age_seconds = (now - start_dt).total_seconds()
+                    if age_seconds > 7200 and not pid:
+                        reason = "no_pid_ancient"
+                except (ValueError, TypeError):
+                    pass
+
+            if reason:
+                stale.append({
+                    "project_id": row["project_id"],
+                    "run_id": row["run_id"],
+                    "pid": pid,
+                    "host": host,
+                    "reason": reason,
+                })
+
+        # Step 3: Mark stale runs as failed
+        cleaned = 0
+        if not dry_run and stale:
+            ts = utc_now()
+            conn = self._db_connect()
+            try:
+                for entry in stale:
+                    conn.execute(
+                        "UPDATE runs SET status = 'failed', exit_code = 137, finished_at = ? WHERE project_id = ? AND run_id = ?",
+                        (ts, entry["project_id"], entry["run_id"]),
+                    )
+                    cleaned += 1
+                conn.commit()
+            finally:
+                conn.close()
+
+        return {
+            "stale_runs": stale,
+            "cleaned": cleaned,
+            "dry_run": dry_run,
+            "still_running": len(running) - len(stale),
         }
 
     # --- Legacy orchestrator.* tool handlers ---
@@ -814,6 +1087,8 @@ class MasterKitFacade:
             return self._tool_kit_active(arguments)
         if name == "kit.kill":
             return self._tool_kit_kill(arguments)
+        if name == "kit.gc":
+            return self._tool_kit_gc(arguments)
 
         with self._lock:
             # Legacy orchestrator.* tools
