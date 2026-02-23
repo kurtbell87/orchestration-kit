@@ -20,6 +20,7 @@ This kit can run standalone, but in this repository it is generally orchestrated
 | LOG | `./experiment.sh log <spec-file>` | Commit results and update research log |
 | CYCLE | `./experiment.sh cycle <spec-file>` | FRAME -> RUN -> READ -> LOG |
 | FULL | `./experiment.sh full <question> <spec-file>` | SURVEY -> FRAME -> RUN -> READ -> LOG |
+| BATCH | `./experiment.sh batch <spec1> <spec2> ...` | Parallel RUN+sync for multiple specs |
 
 Additional commands:
 

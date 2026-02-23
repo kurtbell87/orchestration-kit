@@ -1309,6 +1309,64 @@ print(c)
   done
 }
 
+run_batch() {
+  # Run the RUN+sync phase for each spec in parallel via background subshells.
+  # Frame and read/log phases are NOT included — they must be run separately
+  # because they touch shared state files.
+  #
+  # Usage: experiment.sh batch <spec1> <spec2> ... <specN>
+
+  if (( $# == 0 )); then
+    echo -e "${RED}Usage: experiment.sh batch <spec1> <spec2> ... <specN>${NC}" >&2
+    exit 1
+  fi
+
+  local specs=("$@")
+  local n=${#specs[@]}
+
+  echo ""
+  echo -e "${BOLD}${CYAN}======================================================${NC}"
+  echo -e "${BOLD}${CYAN}  BATCH MODE -- Parallel RUN+sync for $n specs${NC}"
+  echo -e "${BOLD}${CYAN}======================================================${NC}"
+  echo ""
+
+  local pids=()
+  local spec_for_pid=()
+
+  for spec in "${specs[@]}"; do
+    if [[ ! -f "$spec" ]]; then
+      echo -e "${RED}Error: Spec file not found: $spec${NC}" >&2
+      continue
+    fi
+    echo -e "  ${GREEN}Launching:${NC} $spec"
+    (
+      run_run "$spec"
+      sync_results "$spec"
+    ) &
+    pids+=($!)
+    spec_for_pid+=("$spec")
+  done
+
+  # Wait for all and collect exit codes
+  local failed=0
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      echo -e "  ${RED}FAILED:${NC} ${spec_for_pid[$i]} (pid ${pids[$i]})"
+      failed=$((failed + 1))
+    else
+      echo -e "  ${GREEN}OK:${NC} ${spec_for_pid[$i]}"
+    fi
+  done
+
+  echo ""
+  echo -e "${BOLD}Batch complete:${NC} $n specs, $failed failure(s)"
+
+  if (( failed > 0 )); then
+    return 1
+  fi
+  return 0
+}
+
 # ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
@@ -1323,6 +1381,7 @@ case "${1:-help}" in
   log)        shift; run_log "$@" ;;
   cycle)      shift; run_cycle "$@" ;;
   full)       shift; run_full "$@" ;;
+  batch)      shift; run_batch "$@" ;;
   status)     shift; run_status "$@" ;;
   program)    shift; run_program "$@" ;;
   synthesize)        shift; run_synthesize "${1:-manual}" ;;
@@ -1340,6 +1399,7 @@ case "${1:-help}" in
     echo "  log         <spec-file>            Commit results, create PR"
     echo "  cycle       <spec-file>            Run frame -> run -> read -> log"
     echo "  full        <question> <spec-file> Run survey -> frame -> run -> read -> log"
+    echo "  batch     <spec1> <spec2> ...   Run RUN+sync in parallel for multiple specs"
     echo "  status                             Show research program status"
     echo "  program     [--max-cycles N] [--dry-run]  Auto-advance through research questions"
     echo "  synthesize  [reason]               Generate synthesis report"
