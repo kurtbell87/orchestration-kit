@@ -581,7 +581,7 @@ If execution is unexpectedly slow or runs into local resource issues, cloud is a
 ALL training and heavy computation MUST run on EC2. Do NOT run model training locally.
 
 Use cloud-run to execute the experiment:
-  ${_okit:-orchestration-kit}/tools/cloud-run run \"python <your-script>\" \\
+  ${_okit:-orchestration-kit}/tools/cloud-run run --validate <SCRIPT_PATH> \"python <your-script>\" \\
       --spec $spec_file \\
       --data-dirs ${DATA_DIR:-data}/ \\
       --output-dir $results_path/ \\

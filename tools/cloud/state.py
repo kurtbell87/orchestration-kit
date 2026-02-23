@@ -121,3 +121,58 @@ def list_batch_runs(project_root: str, batch_id: str) -> list[dict]:
         if entry.get("batch_id") == batch_id:
             results.append({"run_id": rid, **entry})
     return results
+
+
+def gc_stale(project_root: str) -> int:
+    """Garbage-collect stale entries in project-local cloud-state.json.
+
+    For each entry with status "running" or "pending":
+    - If exit_code exists in S3, update local state to match.
+    - If older than 24h with no heartbeat, mark as stale.
+    Returns count of cleaned entries.
+    """
+    from cloud import s3 as s3_mod
+
+    data = _load(project_root)
+    cleaned = 0
+    to_remove = []
+
+    for run_id, entry in list(data["active_runs"].items()):
+        # Check if exit_code exists in S3
+        try:
+            exit_code = s3_mod.check_exit_code(run_id)
+            if exit_code is not None:
+                to_remove.append(run_id)
+                cleaned += 1
+                continue
+        except Exception:
+            pass
+
+        # Check if older than 24h with no heartbeat
+        launched = entry.get("launched_at") or entry.get("registered_at")
+        if launched:
+            try:
+                launched_dt = datetime.fromisoformat(launched.replace("Z", "+00:00"))
+                age = datetime.now(timezone.utc) - launched_dt
+                if age.total_seconds() > 24 * 3600:
+                    # Check heartbeat
+                    try:
+                        hb = s3_mod.check_heartbeat(run_id)
+                        if hb is None:
+                            to_remove.append(run_id)
+                            cleaned += 1
+                            continue
+                    except Exception:
+                        to_remove.append(run_id)
+                        cleaned += 1
+                        continue
+            except (ValueError, TypeError):
+                pass
+
+    for run_id in to_remove:
+        data["active_runs"].pop(run_id, None)
+
+    if to_remove:
+        _save(project_root, data)
+
+    return cleaned

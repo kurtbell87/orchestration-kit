@@ -11,7 +11,31 @@ set -euo pipefail
 LOGFILE="/var/log/experiment.log"
 S3_BASE="s3://${S3_BUCKET}/${S3_PREFIX}"
 
-trap '_ec=${FINAL_EXIT_CODE:-$?}; aws s3 cp "$LOGFILE" "${S3_BASE}/experiment.log" --region "$AWS_DEFAULT_REGION" 2>/dev/null; echo "$_ec" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" 2>/dev/null; exit $_ec' EXIT
+SYNC_DAEMON_PID=""
+
+cleanup() {
+    local exit_code=${FINAL_EXIT_CODE:-$?}
+    echo "[bootstrap] Cleaning up (exit_code=$exit_code)"
+
+    # Kill sync daemon first
+    if [[ -n "${SYNC_DAEMON_PID:-}" ]]; then
+        kill "$SYNC_DAEMON_PID" 2>/dev/null || true
+        wait "$SYNC_DAEMON_PID" 2>/dev/null || true
+    fi
+
+    # Final results sync BEFORE exit_code (so results are available)
+    aws s3 sync /opt/results/ "${S3_BASE}/results/" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null || true
+
+    # Upload final log
+    aws s3 cp "$LOGFILE" "${S3_BASE}/experiment.log" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null || true
+
+    # Write exit code LAST (this is the completion signal)
+    echo "$exit_code" | aws s3 cp - "${S3_BASE}/exit_code" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null
+
+    exit $exit_code
+}
+
+trap cleanup EXIT
 
 exec > >(tee -a "$LOGFILE") 2>&1
 echo "=== Bootstrap start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
@@ -60,6 +84,28 @@ MAX_SECONDS=$(awk "BEGIN{printf \"%d\", $MAX_HOURS * 3600}")
 ) &
 WATCHDOG_PID=$!
 
+# ── Sync daemon: heartbeat + log + incremental results ──────────
+(
+    _sync_counter=0
+    while true; do
+        sleep 60
+        _sync_counter=$((_sync_counter + 1))
+
+        # Heartbeat: write UTC timestamp to S3 (every 60s)
+        date -u +%Y-%m-%dT%H:%M:%SZ | aws s3 cp - "${S3_BASE}/heartbeat" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null || true
+
+        # Log: upload current log file (every 60s)
+        aws s3 cp "$LOGFILE" "${S3_BASE}/experiment.log" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null || true
+
+        # Results: sync every 5 minutes
+        if (( _sync_counter % 5 == 0 )); then
+            aws s3 sync /opt/results/ "${S3_BASE}/results/" --region "$AWS_DEFAULT_REGION" --quiet 2>/dev/null || true
+        fi
+    done
+) &
+SYNC_DAEMON_PID=$!
+echo "[bootstrap] Sync daemon started (PID=$SYNC_DAEMON_PID)"
+
 # 6. Run experiment
 echo "=== Running: $EXPERIMENT_COMMAND ==="
 mkdir -p /opt/results
@@ -75,6 +121,13 @@ docker run --rm \
 
 echo "=== Experiment finished: exit code $EXIT_CODE ==="
 kill $WATCHDOG_PID 2>/dev/null || true
+
+# Kill sync daemon
+if [[ -n "${SYNC_DAEMON_PID:-}" ]]; then
+    kill "$SYNC_DAEMON_PID" 2>/dev/null || true
+    wait "$SYNC_DAEMON_PID" 2>/dev/null || true
+    echo "[bootstrap] Sync daemon stopped"
+fi
 
 # 7. Upload results + shutdown
 aws s3 sync /opt/results/ "${S3_BASE}/results/" --region "$AWS_DEFAULT_REGION" || true

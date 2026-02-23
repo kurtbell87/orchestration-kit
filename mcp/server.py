@@ -532,6 +532,7 @@ class MasterKitFacade:
                 raise ValueError("each spec_path must be a non-empty string")
         return self._launch_background("research", "batch", [str(s) for s in spec_paths])
 
+
     # --- Dashboard query tool handlers (synchronous, direct SQLite) ---
 
     def _tool_kit_status(self, payload: dict[str, Any]) -> dict[str, Any]:
