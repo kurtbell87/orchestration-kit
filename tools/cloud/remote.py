@@ -224,8 +224,24 @@ def run(
         raise
 
 
+def _get_backend_for_run(state: dict):
+    """Instantiate the appropriate backend for a run based on stored state."""
+    backend_name = state.get("backend", "aws")
+    if backend_name == "aws":
+        from .backends.aws import AWSBackend
+        return AWSBackend()
+    elif backend_name == "runpod":
+        from .backends.runpod import RunPodBackend
+        return RunPodBackend()
+    raise ValueError(f"Unknown backend: {backend_name}")
+
+
 def poll_status(run_id: str) -> dict:
-    """Check the status of a detached run by polling S3 for exit_code."""
+    """Check the status of a detached run by polling S3 for exit_code.
+
+    Enhanced: when no exit_code is found, checks EC2 instance state and
+    includes heartbeat information.
+    """
     state = _load_state(run_id)
 
     if state["status"] in ("completed", "failed", "error"):
@@ -240,7 +256,81 @@ def poll_status(run_id: str) -> dict:
             status=new_status,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-    return state
+        return state
+
+    # No exit_code found — check instance health
+    result = dict(state)
+    result["status"] = "running"
+
+    # Check EC2 instance state
+    try:
+        backend = _get_backend_for_run(state)
+        instance_id = state.get("instance_id")
+        if instance_id:
+            instance_state = backend.status(instance_id)
+            if instance_state in ("terminated", "stopped", "shutting-down"):
+                result["status"] = "terminated_no_results"
+                result["instance_state"] = instance_state
+                result["message"] = "Instance terminated without writing results"
+                _update_state(run_id, status="terminated_no_results")
+                return result
+    except Exception:
+        pass
+
+    # Check heartbeat
+    try:
+        heartbeat = s3_helper.check_heartbeat(run_id)
+        if heartbeat:
+            result["last_heartbeat"] = heartbeat["timestamp"]
+            result["heartbeat_age_seconds"] = heartbeat["age_seconds"]
+            if heartbeat["age_seconds"] > 600:
+                result["warning"] = "heartbeat_stale"
+    except Exception:
+        pass
+
+    return result
+
+
+def gc_stale_runs(backend) -> int:
+    """Garbage-collect stale runs: check EC2 instance state for running entries.
+
+    For terminated instances with no exit_code, writes exit_code=137 to S3.
+    Returns count of cleaned-up runs.
+    """
+    runs = list_runs()
+    cleaned = 0
+
+    for run in runs:
+        if run.get("status") not in ("running", "provisioning"):
+            continue
+
+        run_id = run["run_id"]
+
+        # Check if exit_code already exists
+        if s3_helper.check_exit_code(run_id) is not None:
+            continue
+
+        # Check instance state
+        instance_id = run.get("instance_id")
+        if not instance_id:
+            continue
+
+        try:
+            instance_state = backend.status(instance_id)
+            if instance_state in ("terminated", "stopped", "shutting-down"):
+                # Write exit_code=137 (terminated) to S3
+                s3_helper.write_marker(run_id, "exit_code", "137")
+                _update_state(
+                    run_id,
+                    status="terminated_no_results",
+                    exit_code=137,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                cleaned += 1
+        except Exception:
+            pass
+
+    return cleaned
 
 
 def pull_results(run_id: str, local_dir: Optional[str] = None) -> str:

@@ -7,6 +7,7 @@ Usage:
   tools/cloud-run pull <run-id> [--output-dir <dir>]        # Download results
   tools/cloud-run ls                                        # List tracked runs
   tools/cloud-run gc                                        # Clean up orphaned resources
+  tools/cloud-run logs <run-id> [--lines N] [--follow]      # Tail experiment log
   tools/cloud-run terminate <run-id>                        # Force-terminate a run
   tools/cloud-run reap [--dry-run] [--hard-ceiling N]       # Terminate expired instances
 """
@@ -17,6 +18,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add tools/ to path so we can import cloud module
@@ -36,6 +39,18 @@ def cmd_run(args):
     """Execute an experiment on a remote cloud instance."""
     spec_file = args.spec
     command = args.command
+
+    # --- Pre-flight validation (before any EC2 provisioning) ---
+    if args.validate:
+        from cloud.validate import validate_all
+        all_ok, checks = validate_all(args.validate, skip_smoke=args.skip_smoke)
+        for name, ok, msg in checks:
+            status = "PASS" if ok else "FAIL"
+            print(f"  [{status}] {name}: {msg}")
+        if not all_ok:
+            print("\nValidation failed. Not launching EC2 instance.")
+            sys.exit(2)
+        print("\nAll validation checks passed. Proceeding with cloud launch.\n")
 
     # Run preflight to determine backend and instance type (unless overridden)
     backend_name = args.backend
@@ -155,12 +170,26 @@ def cmd_run(args):
             print(f"Results: {result['local_results_dir']}")
 
 
+def _show_running_log(run_id: str, status: str) -> None:
+    """Print last log lines for running/provisioning instances."""
+    if status not in ("running", "provisioning"):
+        return
+    try:
+        log_tail = s3.tail_log(run_id, lines=5)
+        if log_tail:
+            print(f"\nLast log lines:")
+            print(log_tail)
+    except Exception:
+        pass
+
+
 def cmd_status(args):
     """Check the status of a cloud run."""
     project_root = getattr(args, "project_root", None) or os.environ.get("PROJECT_ROOT")
     if args.run_id:
         result = remote.poll_status(args.run_id)
         _print_run(result)
+        _show_running_log(args.run_id, result.get("status", ""))
         # Verify against project-local state and clean stale entries
         if project_root:
             local = project_state.get_run(project_root, args.run_id)
@@ -174,6 +203,7 @@ def cmd_status(args):
             return
         result = remote.poll_status(runs[0]["run_id"])
         _print_run(result)
+        _show_running_log(runs[0]["run_id"], result.get("status", ""))
 
 
 def cmd_pull(args):
@@ -209,23 +239,37 @@ def cmd_ls(args):
         if r["status"] in ("running", "provisioning"):
             r = remote.poll_status(r["run_id"])
 
-    fmt = "{:<36}  {:<12}  {:<6}  {:<14}  {:<8}  {}"
-    print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "HOURS", "COMMAND"))
-    print("-" * 104)
+    fmt = "{:<36}  {:<12}  {:<6}  {:<14}  {:<10}  {:<10}  {}"
+    print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "Elapsed", "Est. Cost", "COMMAND"))
+    print("-" * 120)
     for r in runs:
         ec = str(r.get("exit_code", "-"))
-        hrs = ""
+        elapsed_str = ""
+        cost_str = ""
+
+        # Compute elapsed time
         if r.get("elapsed_seconds"):
-            hrs = f"{r['elapsed_seconds']/3600:.1f}"
-        cmd = (r.get("command", "")[:40] + "...") if len(r.get("command", "")) > 40 else r.get("command", "")
+            elapsed_str = f"{r['elapsed_seconds']/3600:.1f}h"
+        elif r.get("started_at") and r.get("status") in ("running", "provisioning"):
+            try:
+                started = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
+                elapsed_secs = (datetime.now(timezone.utc) - started).total_seconds()
+                elapsed_str = f"{elapsed_secs/3600:.1f}h"
+                hourly_rate = _hourly_rate(r.get("instance_type", ""))
+                cost_str = f"${elapsed_secs/3600 * hourly_rate:.2f}"
+            except (ValueError, TypeError):
+                pass
+
+        cmd = (r.get("command", "")[:35] + "...") if len(r.get("command", "")) > 35 else r.get("command", "")
         print(fmt.format(
             r["run_id"], r.get("backend", "?"), ec,
-            r.get("status", "?"), hrs, cmd,
+            r.get("status", "?"), elapsed_str, cost_str, cmd,
         ))
 
 
 def cmd_gc(args):
-    """Garbage-collect orphaned cloud resources."""
+    """Garbage-collect orphaned cloud resources and stale runs."""
+    # 1. Backend-level resource GC
     for backend_name in ("aws", "runpod"):
         try:
             backend = _get_backend(backend_name)
@@ -236,6 +280,34 @@ def cmd_gc(args):
                 print(f"  {backend_name}: no orphaned resources")
         except (ImportError, Exception) as e:
             print(f"  {backend_name}: skipped ({e})")
+
+    # 2. Stale run GC (check EC2 instance state for running entries)
+    stale_runs_cleaned = 0
+    try:
+        backend = _get_backend("aws")
+        stale_runs_cleaned = remote.gc_stale_runs(backend)
+    except Exception as e:
+        print(f"  stale run check: skipped ({e})")
+
+    # 3. Local state GC
+    stale_state_cleaned = 0
+    project_root = os.environ.get("PROJECT_ROOT")
+    if project_root:
+        try:
+            stale_state_cleaned = project_state.gc_stale(project_root)
+        except Exception as e:
+            print(f"  local state gc: skipped ({e})")
+
+    print(f"\nCleaned {stale_runs_cleaned} stale runs, updated {stale_state_cleaned} local state entries")
+
+
+def cmd_logs(args):
+    """Tail experiment log from S3."""
+    result = s3.tail_log(args.run_id, lines=args.lines, follow=args.follow)
+    if result:
+        print(result)
+    else:
+        print(f"No log found for run {args.run_id}")
 
 
 def cmd_terminate(args):
@@ -452,6 +524,11 @@ def cmd_snapshot_create(args):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _hourly_rate(instance_type: str) -> float:
+    """Estimate hourly cost: GPU instances ~$0.50/hr, CPU ~$0.10/hr."""
+    return 0.50 if "g" in instance_type else 0.10
+
+
 def _get_backend(name: str):
     if name == "aws":
         from cloud.backends.aws import AWSBackend
@@ -476,6 +553,43 @@ def _print_run(r: dict):
         print(f"Exit code:  {r['exit_code']}")
     if r.get("elapsed_seconds"):
         print(f"Elapsed:    {r['elapsed_seconds']//60}m{r['elapsed_seconds']%60}s")
+
+    # Live elapsed time and cost estimate for running instances
+    if r.get("status") in ("running", "provisioning") and r.get("started_at"):
+        try:
+            started = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
+            elapsed_secs = (datetime.now(timezone.utc) - started).total_seconds()
+            elapsed_hrs = elapsed_secs / 3600
+            print(f"Elapsed:    {elapsed_hrs:.1f}h (live)")
+            hourly_rate = _hourly_rate(r.get("instance_type", ""))
+            cost = elapsed_hrs * hourly_rate
+            print(f"Est. Cost:  ${cost:.2f} (@ ${hourly_rate:.2f}/hr)")
+        except (ValueError, TypeError):
+            pass
+
+    # Heartbeat info for running instances
+    if r.get("status") in ("running", "provisioning"):
+        try:
+            heartbeat = s3.check_heartbeat(r["run_id"])
+            if heartbeat:
+                print(f"Heartbeat:  {heartbeat['timestamp']} ({heartbeat['age_seconds']}s ago)")
+                if heartbeat["age_seconds"] > 600:
+                    print(f"  WARNING: heartbeat stale (>{heartbeat['age_seconds']}s)")
+            else:
+                print(f"Heartbeat:  none")
+        except Exception:
+            pass
+
+        # Show last log lines
+        try:
+            log_lines = s3.tail_log(r["run_id"], lines=3)
+            if log_lines:
+                print(f"Last log:")
+                for line in log_lines.split("\n"):
+                    print(f"  {line}")
+        except Exception:
+            pass
+
     if r.get("local_results_dir"):
         print(f"Results:    {r['local_results_dir']}")
     if r.get("error"):
@@ -514,6 +628,8 @@ def main():
     p_run.add_argument("--allow-duplicate", action="store_true", help="Allow launching even if an instance with the same spec is running")
     p_run.add_argument("--image-tag", help="ECR image tag to use (default: git SHA)")
     p_run.add_argument("--gpu", action="store_true", help="Use GPU instance with PyTorch Deep Learning AMI (no Docker)")
+    p_run.add_argument("--validate", metavar="SCRIPT", help="Validate script before cloud execution")
+    p_run.add_argument("--skip-smoke", action="store_true", help="Skip smoke test (syntax + imports only)")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 
@@ -535,6 +651,13 @@ def main():
     # --- gc ---
     p_gc = sub.add_parser("gc", help="Garbage-collect orphaned resources")
     p_gc.set_defaults(func=cmd_gc)
+
+    # --- logs ---
+    p_logs = sub.add_parser("logs", help="Tail experiment log from S3")
+    p_logs.add_argument("run_id", help="Run ID")
+    p_logs.add_argument("--lines", "-n", type=int, default=50, help="Number of lines (default 50)")
+    p_logs.add_argument("--follow", "-f", action="store_true", help="Follow log output (poll every 10s)")
+    p_logs.set_defaults(func=cmd_logs)
 
     # --- terminate ---
     p_term = sub.add_parser("terminate", help="Force-terminate a run")
