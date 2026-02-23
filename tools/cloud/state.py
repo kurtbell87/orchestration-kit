@@ -63,6 +63,7 @@ def register_run(
     spec_file: Optional[str] = None,
     launched_at: Optional[str] = None,
     max_hours: float = 12.0,
+    batch_id: Optional[str] = None,
 ) -> None:
     """Record a newly-provisioned run in project-local state."""
     data = _load(project_root)
@@ -74,6 +75,7 @@ def register_run(
         "launched_at": launched_at or datetime.now(timezone.utc).isoformat(),
         "max_hours": max_hours,
         "registered_at": datetime.now(timezone.utc).isoformat(),
+        "batch_id": batch_id or "",
     }
     _save(project_root, data)
 
@@ -109,3 +111,13 @@ def update_run(project_root: str, run_id: str, **updates) -> None:
     if run_id in data["active_runs"]:
         data["active_runs"][run_id].update(updates)
         _save(project_root, data)
+
+
+def list_batch_runs(project_root: str, batch_id: str) -> list[dict]:
+    """Return all active runs belonging to a given batch_id."""
+    data = _load(project_root)
+    results = []
+    for rid, entry in data["active_runs"].items():
+        if entry.get("batch_id") == batch_id:
+            results.append({"run_id": rid, **entry})
+    return results

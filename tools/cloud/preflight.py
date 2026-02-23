@@ -184,6 +184,11 @@ def check_spec(spec_path: str, preference: Optional[str] = None) -> dict:
     result = check(profile, preference=preference)
     result["spec_file"] = str(spec_path)
     result["profile"] = asdict(profile)
+    result["parallelizable"] = profile.parallelizable
+    if profile.parallelizable and result["recommendation"] == "remote":
+        reason = result.get("reason", "")
+        if "parallelizable" not in reason.lower() and "batch" not in reason.lower():
+            result["reason"] = reason + " (parallelizable — suitable for batch execution)"
     return result
 
 

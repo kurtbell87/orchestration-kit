@@ -449,6 +449,87 @@ def cmd_snapshot_create(args):
 
 
 # ---------------------------------------------------------------------------
+# Batch commands
+# ---------------------------------------------------------------------------
+
+def cmd_batch_run(args):
+    from cloud import batch as batch_mod
+    specs = args.specs.split(",")
+    backend_name = args.backend or "aws"
+    gpu_mode = getattr(args, "gpu", False)
+    if gpu_mode:
+        backend_name = "aws"
+    instance_type = args.instance_type or ("g5.xlarge" if gpu_mode else "c7a.8xlarge")
+    backend = _get_backend(backend_name)
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+    data_dirs = args.data_dirs.split(",") if args.data_dirs else None
+    env_vars = {}
+    if args.env:
+        for e in args.env:
+            k, _, v = e.partition("=")
+            env_vars[k] = v
+    result = batch_mod.launch_batch(
+        specs=specs,
+        command=args.command,
+        backend=backend,
+        backend_name=backend_name,
+        project_root=project_root,
+        instance_type=instance_type,
+        data_dirs=data_dirs,
+        sync_back=args.sync_back,
+        output_base=args.output_dir,
+        use_spot=not args.on_demand,
+        max_hours=args.max_hours,
+        env_vars=env_vars,
+        max_instances=args.max_instances,
+        max_cost=args.max_cost,
+        gpu_mode=gpu_mode,
+        image_tag=getattr(args, "image_tag", None),
+    )
+    if getattr(args, "json_output", False):
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Batch {result['batch_id']}: {result['status']}")
+        for spec, run_id in result.get("runs", {}).items():
+            print(f"  {spec}: {run_id}")
+
+
+def cmd_batch_status(args):
+    from cloud import batch as batch_mod
+    result = batch_mod.poll_batch(args.batch_id)
+    if getattr(args, "json_output", False):
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Batch: {result['batch_id']}  Status: {result['status']}")
+        for spec, run_id in result.get("runs", {}).items():
+            print(f"  {spec}: {run_id}")
+
+
+def cmd_batch_pull(args):
+    from cloud import batch as batch_mod
+    result = batch_mod.pull_batch(args.batch_id, args.output_dir)
+    print(f"Pulled {len(result)} result(s)")
+
+
+def cmd_batch_ls(args):
+    from cloud import batch as batch_mod
+    batches = batch_mod.list_batches()
+    if not batches:
+        print("No tracked batches.")
+        return
+    fmt = "{:<40}  {:<12}  {:<6}  {}"
+    print(fmt.format("BATCH_ID", "STATUS", "RUNS", "STARTED"))
+    print("-" * 80)
+    for b in batches:
+        print(fmt.format(
+            b.get("batch_id", "?"),
+            b.get("status", "?"),
+            str(len(b.get("specs", []))),
+            b.get("started_at", "?")[:19],
+        ))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -594,6 +675,42 @@ def main():
     p_snap_create = snap_sub.add_parser("create", help="Print manual steps to create an EBS data snapshot")
     p_snap_create.set_defaults(func=cmd_snapshot_create)
 
+    # --- batch ---
+    p_batch = sub.add_parser("batch", help="Parallel batch execution")
+    batch_sub = p_batch.add_subparsers(dest="batch_cmd")
+
+    p_br = batch_sub.add_parser("run", help="Launch batch of experiments in parallel")
+    p_br.add_argument("command", help="Shell command to execute on each instance")
+    p_br.add_argument("--specs", required=True, help="Comma-separated spec file paths")
+    p_br.add_argument("--max-instances", type=int, default=5, help="Max concurrent instances (default: 5)")
+    p_br.add_argument("--max-cost", type=float, help="Reject if estimated total cost exceeds this (USD)")
+    p_br.add_argument("--backend", choices=["aws", "runpod"])
+    p_br.add_argument("--instance-type")
+    p_br.add_argument("--data-dirs")
+    p_br.add_argument("--sync-back", default="results")
+    p_br.add_argument("--output-dir")
+    p_br.add_argument("--project-root")
+    p_br.add_argument("--on-demand", action="store_true")
+    p_br.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS)
+    p_br.add_argument("--env", action="append")
+    p_br.add_argument("--gpu", action="store_true")
+    p_br.add_argument("--image-tag")
+    p_br.add_argument("--json", dest="json_output", action="store_true")
+    p_br.set_defaults(func=cmd_batch_run)
+
+    p_bs = batch_sub.add_parser("status", help="Check batch status")
+    p_bs.add_argument("batch_id", help="Batch ID")
+    p_bs.add_argument("--json", dest="json_output", action="store_true")
+    p_bs.set_defaults(func=cmd_batch_status)
+
+    p_bp = batch_sub.add_parser("pull", help="Pull results for all runs in a batch")
+    p_bp.add_argument("batch_id", help="Batch ID")
+    p_bp.add_argument("--output-dir")
+    p_bp.set_defaults(func=cmd_batch_pull)
+
+    p_bl = batch_sub.add_parser("ls", help="List tracked batches")
+    p_bl.set_defaults(func=cmd_batch_ls)
+
     args = parser.parse_args()
 
     if not args.subcmd:
@@ -606,6 +723,10 @@ def main():
 
     if args.subcmd == "snapshot" and not getattr(args, "snap_cmd", None):
         p_snap.print_help()
+        sys.exit(1)
+
+    if args.subcmd == "batch" and not getattr(args, "batch_cmd", None):
+        p_batch.print_help()
         sys.exit(1)
 
     args.func(args)

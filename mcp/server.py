@@ -269,6 +269,22 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "kit.research_batch",
+        "description": "Run parallel batch of experiment RUN phases on separate EC2 instances. Returns immediately with run_id. Poll kit.status or kit.runs for completion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "spec_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of experiment spec paths to run in parallel",
+                },
+            },
+            "required": ["spec_paths"],
+            "additionalProperties": False,
+        },
+    },
     # --- Dashboard query tools (synchronous) ---
     {
         "name": "kit.status",
@@ -506,6 +522,15 @@ class MasterKitFacade:
 
     def _tool_kit_math(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._launch_background("math", "full", [require_str(payload, "spec_path")])
+
+    def _tool_kit_research_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        spec_paths = payload.get("spec_paths", [])
+        if not isinstance(spec_paths, list) or not spec_paths:
+            raise ValueError("spec_paths must be a non-empty list of strings")
+        for s in spec_paths:
+            if not isinstance(s, str) or not s:
+                raise ValueError("each spec_path must be a non-empty string")
+        return self._launch_background("research", "batch", [str(s) for s in spec_paths])
 
     # --- Dashboard query tool handlers (synchronous, direct SQLite) ---
 
@@ -1081,6 +1106,8 @@ class MasterKitFacade:
             return self._tool_kit_research_program(arguments)
         if name == "kit.math":
             return self._tool_kit_math(arguments)
+        if name == "kit.research_batch":
+            return self._tool_kit_research_batch(arguments)
 
         # Process visibility tools — no lock needed (read-only or pid-safe)
         if name == "kit.active":

@@ -85,6 +85,7 @@ def run(
     allow_duplicate: bool = False,
     image_tag: Optional[str] = None,
     gpu_mode: bool = False,
+    batch_id: Optional[str] = None,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -111,6 +112,7 @@ def run(
         "instance_id": None,
         "exit_code": None,
         "finished_at": None,
+        "batch_id": batch_id or "",
     }
 
     if dry_run:
@@ -193,6 +195,7 @@ def run(
             spec_file=spec_file,
             launched_at=config.launched_at,
             max_hours=max_hours,
+            batch_id=batch_id,
         )
 
         # --- 3. Wait for ready ---
