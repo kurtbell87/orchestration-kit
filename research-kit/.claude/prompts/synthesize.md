@@ -31,7 +31,7 @@ You are a **Research Synthesist**. A series of experiments has been completed. Y
 # Research Synthesis
 
 **Generated:** YYYY-MM-DD
-**Trigger:** [all_resolved / max_cycles / budget_exhausted / manual]
+**Trigger:** [all_resolved / max_cycles / budget_exhausted / wall_clock_exhausted / handoff_pause / interrupted / manual]
 **Experiments analyzed:** [N]
 **Questions addressed:** [N answered / N total]
 

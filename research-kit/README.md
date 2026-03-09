@@ -24,7 +24,7 @@ This kit can run standalone, but in this repository it is generally orchestrated
 Additional commands:
 
 - `./experiment.sh status`
-- `./experiment.sh program [--max-cycles N] [--dry-run]`
+- `./experiment.sh program [--overnight] [--max-cycles N] [--time-budget SECS] [--wall-hours H] [--skip-handoffs] [--dry-run]`
 - `./experiment.sh synthesize [reason]`
 - `./experiment.sh complete-handoff`
 - `./experiment.sh validate-handoff`
@@ -89,7 +89,28 @@ Program-mode controls include:
 
 - `MAX_PROGRAM_CYCLES`
 - `MAX_PROGRAM_GPU_HOURS`
+- `MAX_PROGRAM_WALL_HOURS` — total wall-clock budget (0=unlimited)
+- `EXP_TIME_BUDGET` — per-RUN hard timeout in seconds (0=auto-derive from spec)
 - `INCONCLUSIVE_THRESHOLD`
+
+## Overnight Mode
+
+Run experiments unattended overnight:
+
+```bash
+# Overnight with defaults (skip handoffs, 2h per-experiment budget)
+./experiment.sh program --overnight
+
+# With explicit wall-clock budget
+./experiment.sh program --overnight --wall-hours 12 --max-cycles 20
+```
+
+Overnight mode adds:
+- **Ratchet pattern** — REFUTED/ERROR experiments auto-revert source code changes
+- **Time budgets** — hard wall-clock kill per RUN phase (prevents hangs)
+- **Resilience** — cycle failures are caught, reverted, and skipped
+- **Synthesis on all exits** — always generates a report before stopping
+- **macOS notification** — desktop alert when the program completes
 
 ## Aliases (Optional)
 
