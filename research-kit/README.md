@@ -20,6 +20,7 @@ This kit can run standalone, but in this repository it is generally orchestrated
 | LOG | `./experiment.sh log <spec-file>` | Commit results and update research log |
 | CYCLE | `./experiment.sh cycle <spec-file>` | FRAME -> RUN -> READ -> LOG |
 | FULL | `./experiment.sh full <question> <spec-file>` | SURVEY -> FRAME -> RUN -> READ -> LOG |
+| BATCH | `./experiment.sh batch <spec1> <spec2> ...` | Parallel RUN+sync for multiple specs |
 
 Additional commands:
 
@@ -69,6 +70,17 @@ READ verdicts are explicit:
 - `CONFIRMED`
 - `REFUTED`
 - `INCONCLUSIVE`
+
+## Cloud Execution (EC2)
+
+When `COMPUTE_TARGET=ec2` is set in `.orchestration-kit.env`:
+
+- The RUN phase injects a **mandatory** cloud-run directive (not advisory) into the sub-agent prompt
+- `sync_results()` runs automatically between RUN and READ in `cycle`, `full`, and `program` commands
+- Results are pulled from cloud-run (by run-id) with S3 artifact-store hydration as fallback
+- When `COMPUTE_TARGET=local` (or unset), behavior is unchanged (backward compatible)
+
+No new CLI flags or commands — this is entirely env-var driven.
 
 ## Configuration
 

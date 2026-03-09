@@ -6,6 +6,9 @@ import os
 import subprocess
 import tarfile
 import tempfile
+import time
+import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +23,17 @@ def upload_code(project_root: str, run_id: str, *, exclude_patterns: Optional[li
     """Tar project code (respecting .gitignore) and upload to S3.
 
     Returns the S3 URI of the uploaded archive.
+
+    .. deprecated::
+        Use ECR images instead. Set CLOUD_RUN_ECR_REPO_URI to enable
+        Docker-based execution which skips code upload entirely.
     """
+    warnings.warn(
+        "upload_code() is deprecated. Use ECR images instead: "
+        "set CLOUD_RUN_ECR_REPO_URI and run 'cloud-run build && cloud-run push'.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     s3_uri = f"{_s3_prefix(run_id)}/code.tar.gz"
     project = Path(project_root)
 
@@ -91,6 +104,90 @@ def write_marker(run_id: str, key: str, content: str) -> None:
         ["aws", "s3", "cp", "-", s3_uri, "--region", AWS_REGION],
         input=content, capture_output=True, text=True, timeout=15,
     )
+
+
+def check_heartbeat(run_id: str) -> Optional[dict]:
+    """Check if a heartbeat file exists in S3 for the given run.
+
+    Returns {"timestamp": "<ISO-8601>", "age_seconds": <int>} if found,
+    None if no heartbeat exists.
+    """
+    s3_uri = f"{_s3_prefix(run_id)}/heartbeat"
+    try:
+        result = subprocess.run(
+            ["aws", "s3", "cp", s3_uri, "-", "--region", AWS_REGION],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            ts_str = result.stdout.strip()
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            age = int((now - ts).total_seconds())
+            return {"timestamp": ts_str, "age_seconds": age}
+    except Exception:
+        pass
+    return None
+
+
+def _get_s3_client():
+    """Return a boto3 S3 client. Exists as a seam for mocking."""
+    import boto3
+    return boto3.client("s3", region_name=AWS_REGION)
+
+
+def tail_log(run_id: str, lines: int = 50, follow: bool = False) -> str:
+    """Download experiment log from S3 and return the last N lines.
+
+    If follow=True, enters a polling loop (10s interval) printing new lines
+    until exit_code appears or 30 min safety timeout.
+    """
+    s3_uri = f"{_s3_prefix(run_id)}/experiment.log"
+
+    def _fetch_log() -> str:
+        result = subprocess.run(
+            ["aws", "s3", "cp", s3_uri, "-", "--region", AWS_REGION],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        return ""
+
+    if not follow:
+        content = _fetch_log()
+        if not content:
+            return ""
+        all_lines = content.splitlines()
+        tail_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return "\n".join(tail_lines)
+
+    # Follow mode
+    seen_lines = 0
+    start = time.monotonic()
+    timeout = 30 * 60  # 30 minutes
+
+    while time.monotonic() - start < timeout:
+        content = _fetch_log()
+        if content:
+            all_lines = content.splitlines()
+            if len(all_lines) > seen_lines:
+                new_lines = all_lines[seen_lines:]
+                for line in new_lines:
+                    print(line)
+                seen_lines = len(all_lines)
+
+        # Check if run completed
+        if check_exit_code(run_id) is not None:
+            break
+
+        time.sleep(10)
+
+    # Return final tail
+    content = _fetch_log()
+    if not content:
+        return ""
+    all_lines = content.splitlines()
+    tail_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+    return "\n".join(tail_lines)
 
 
 def get_run_s3_prefix(run_id: str) -> str:

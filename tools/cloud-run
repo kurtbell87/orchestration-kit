@@ -7,6 +7,7 @@ Usage:
   tools/cloud-run pull <run-id> [--output-dir <dir>]        # Download results
   tools/cloud-run ls                                        # List tracked runs
   tools/cloud-run gc                                        # Clean up orphaned resources
+  tools/cloud-run logs <run-id> [--lines N] [--follow]      # Tail experiment log
   tools/cloud-run terminate <run-id>                        # Force-terminate a run
   tools/cloud-run reap [--dry-run] [--hard-ceiling N]       # Terminate expired instances
 """
@@ -17,13 +18,17 @@ import argparse
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add tools/ to path so we can import cloud module
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import subprocess
+
 from cloud import remote, s3
-from cloud.config import DEFAULT_MAX_HOURS, DEFAULT_RUNTIME, RUNPOD_DEFAULT_DATACENTER, VALID_RUNTIMES
+from cloud.config import DEFAULT_MAX_HOURS, RUNPOD_DEFAULT_DATACENTER, ECR_REPO_URI, AWS_REGION
 from cloud.preflight import check_spec
 from cloud.remote import DuplicateSpecError
 from cloud import state as project_state
@@ -35,14 +40,27 @@ def cmd_run(args):
     spec_file = args.spec
     command = args.command
 
+    # --- Pre-flight validation (before any EC2 provisioning) ---
+    if args.validate:
+        from cloud.validate import validate_all
+        all_ok, checks = validate_all(args.validate, skip_smoke=args.skip_smoke)
+        for name, ok, msg in checks:
+            status = "PASS" if ok else "FAIL"
+            print(f"  [{status}] {name}: {msg}")
+        if not all_ok:
+            print("\nValidation failed. Not launching EC2 instance.")
+            sys.exit(2)
+        print("\nAll validation checks passed. Proceeding with cloud launch.\n")
+
     # Run preflight to determine backend and instance type (unless overridden)
     backend_name = args.backend
     instance_type = args.instance_type
     use_spot = not args.on_demand
-    runtime = args.runtime  # may be None if not explicitly set
+    preflight_gpu_mode = False
 
     if spec_file and (not backend_name or not instance_type):
         pf = check_spec(spec_file)
+        preflight_gpu_mode = pf.get("gpu_mode", False)
         if not backend_name:
             if pf["recommendation"] == "local":
                 print(f"Preflight says local execution is sufficient: {pf['reason']}")
@@ -56,14 +74,19 @@ def cmd_run(args):
             instance_type = pf.get("instance_type", "c7a.8xlarge")
         if "use_spot" in pf and pf["recommendation"] != "local":
             use_spot = pf["use_spot"] and not args.on_demand
-        # Resolve runtime: explicit flag > preflight profile > default
-        if runtime is None:
-            runtime = pf.get("runtime", DEFAULT_RUNTIME)
+
+    # GPU mode: explicit --gpu flag OR auto-detected from preflight (model_type=pytorch)
+    gpu_mode = getattr(args, "gpu", False) or preflight_gpu_mode
+    if preflight_gpu_mode and not getattr(args, "gpu", False):
+        print(f"Auto-detected GPU mode from spec (model_type=pytorch)")
+    if gpu_mode:
+        backend_name = "aws"
+        if not instance_type or instance_type in ("c7a.8xlarge", "g5.xlarge"):
+            instance_type = "g5.xlarge"
 
     # Defaults if still not set
     backend_name = backend_name or "aws"
     instance_type = instance_type or "c7a.8xlarge"
-    runtime = runtime or DEFAULT_RUNTIME
 
     # Resolve project root
     project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
@@ -77,6 +100,29 @@ def cmd_run(args):
         for e in args.env:
             k, _, v = e.partition("=")
             env_vars[k] = v
+
+    # --- Pre-launch: verify Docker image exists in ECR (skip in GPU mode) ---
+    if backend_name == "aws" and ECR_REPO_URI and not args.dry_run and not gpu_mode:
+        _tag = getattr(args, "image_tag", None) or "latest"
+        _repo_name = ECR_REPO_URI.split("/")[-1]  # e.g. "mbo-dl" from full URI
+        try:
+            _check = subprocess.run(
+                ["aws", "ecr", "batch-get-image",
+                 "--repository-name", _repo_name,
+                 "--image-ids", f"imageTag={_tag}",
+                 "--region", AWS_REGION,
+                 "--query", "images[0].imageId.imageTag",
+                 "--output", "text"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if _check.returncode != 0 or _check.stdout.strip() in ("None", ""):
+                print(f"ERROR: Docker image {_repo_name}:{_tag} not found in ECR.", file=sys.stderr)
+                print(f"  Available tags: run 'aws ecr list-images --repository-name {_repo_name} --region {AWS_REGION}'", file=sys.stderr)
+                print(f"  Build and push: 'cloud-run build --push' or 'tools/docker-build build python --push'", file=sys.stderr)
+                sys.exit(1)
+            print(f"ECR image verified: {_repo_name}:{_tag}")
+        except subprocess.TimeoutExpired:
+            print("WARNING: ECR image check timed out, proceeding anyway", file=sys.stderr)
 
     # Instantiate backend (deferred for dry-run — no SDK needed)
     backend = None if args.dry_run else _get_backend(backend_name)
@@ -99,7 +145,8 @@ def cmd_run(args):
             env_vars=env_vars,
             network_volume_id=getattr(args, "volume", None),
             allow_duplicate=args.allow_duplicate,
-            runtime=runtime,
+            image_tag=getattr(args, "image_tag", None),
+            gpu_mode=gpu_mode,
         )
     except DuplicateSpecError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -110,7 +157,6 @@ def cmd_run(args):
     elif args.dry_run:
         print(f"\n[DRY RUN] Would execute on {backend_name} {instance_type}:")
         print(f"  Command:  {command}")
-        print(f"  Runtime:  {runtime}")
         print(f"  Data:     {data_dirs}")
         print(f"  Max hours: {args.max_hours}")
         print(f"  Spot:     {use_spot}")
@@ -124,12 +170,26 @@ def cmd_run(args):
             print(f"Results: {result['local_results_dir']}")
 
 
+def _show_running_log(run_id: str, status: str) -> None:
+    """Print last log lines for running/provisioning instances."""
+    if status not in ("running", "provisioning"):
+        return
+    try:
+        log_tail = s3.tail_log(run_id, lines=5)
+        if log_tail:
+            print(f"\nLast log lines:")
+            print(log_tail)
+    except Exception:
+        pass
+
+
 def cmd_status(args):
     """Check the status of a cloud run."""
     project_root = getattr(args, "project_root", None) or os.environ.get("PROJECT_ROOT")
     if args.run_id:
         result = remote.poll_status(args.run_id)
         _print_run(result)
+        _show_running_log(args.run_id, result.get("status", ""))
         # Verify against project-local state and clean stale entries
         if project_root:
             local = project_state.get_run(project_root, args.run_id)
@@ -143,6 +203,7 @@ def cmd_status(args):
             return
         result = remote.poll_status(runs[0]["run_id"])
         _print_run(result)
+        _show_running_log(runs[0]["run_id"], result.get("status", ""))
 
 
 def cmd_pull(args):
@@ -178,23 +239,37 @@ def cmd_ls(args):
         if r["status"] in ("running", "provisioning"):
             r = remote.poll_status(r["run_id"])
 
-    fmt = "{:<36}  {:<12}  {:<6}  {:<14}  {:<8}  {}"
-    print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "HOURS", "COMMAND"))
-    print("-" * 104)
+    fmt = "{:<36}  {:<12}  {:<6}  {:<14}  {:<10}  {:<10}  {}"
+    print(fmt.format("RUN_ID", "BACKEND", "CODE", "STATUS", "Elapsed", "Est. Cost", "COMMAND"))
+    print("-" * 120)
     for r in runs:
         ec = str(r.get("exit_code", "-"))
-        hrs = ""
+        elapsed_str = ""
+        cost_str = ""
+
+        # Compute elapsed time
         if r.get("elapsed_seconds"):
-            hrs = f"{r['elapsed_seconds']/3600:.1f}"
-        cmd = (r.get("command", "")[:40] + "...") if len(r.get("command", "")) > 40 else r.get("command", "")
+            elapsed_str = f"{r['elapsed_seconds']/3600:.1f}h"
+        elif r.get("started_at") and r.get("status") in ("running", "provisioning"):
+            try:
+                started = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
+                elapsed_secs = (datetime.now(timezone.utc) - started).total_seconds()
+                elapsed_str = f"{elapsed_secs/3600:.1f}h"
+                hourly_rate = _hourly_rate(r.get("instance_type", ""))
+                cost_str = f"${elapsed_secs/3600 * hourly_rate:.2f}"
+            except (ValueError, TypeError):
+                pass
+
+        cmd = (r.get("command", "")[:35] + "...") if len(r.get("command", "")) > 35 else r.get("command", "")
         print(fmt.format(
             r["run_id"], r.get("backend", "?"), ec,
-            r.get("status", "?"), hrs, cmd,
+            r.get("status", "?"), elapsed_str, cost_str, cmd,
         ))
 
 
 def cmd_gc(args):
-    """Garbage-collect orphaned cloud resources."""
+    """Garbage-collect orphaned cloud resources and stale runs."""
+    # 1. Backend-level resource GC
     for backend_name in ("aws", "runpod"):
         try:
             backend = _get_backend(backend_name)
@@ -205,6 +280,34 @@ def cmd_gc(args):
                 print(f"  {backend_name}: no orphaned resources")
         except (ImportError, Exception) as e:
             print(f"  {backend_name}: skipped ({e})")
+
+    # 2. Stale run GC (check EC2 instance state for running entries)
+    stale_runs_cleaned = 0
+    try:
+        backend = _get_backend("aws")
+        stale_runs_cleaned = remote.gc_stale_runs(backend)
+    except Exception as e:
+        print(f"  stale run check: skipped ({e})")
+
+    # 3. Local state GC
+    stale_state_cleaned = 0
+    project_root = os.environ.get("PROJECT_ROOT")
+    if project_root:
+        try:
+            stale_state_cleaned = project_state.gc_stale(project_root)
+        except Exception as e:
+            print(f"  local state gc: skipped ({e})")
+
+    print(f"\nCleaned {stale_runs_cleaned} stale runs, updated {stale_state_cleaned} local state entries")
+
+
+def cmd_logs(args):
+    """Tail experiment log from S3."""
+    result = s3.tail_log(args.run_id, lines=args.lines, follow=args.follow)
+    if result:
+        print(result)
+    else:
+        print(f"No log found for run {args.run_id}")
 
 
 def cmd_terminate(args):
@@ -271,8 +374,241 @@ def cmd_volume_ls(args):
 
 
 # ---------------------------------------------------------------------------
+# Docker build / push / snapshot commands
+# ---------------------------------------------------------------------------
+
+def _resolve_image_tag(tag: str | None) -> str:
+    """Resolve image tag — defaults to short git SHA."""
+    if tag:
+        return tag
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "latest"
+
+
+def _resolve_ecr_repo() -> str:
+    """Return ECR repo URI or exit with error."""
+    if not ECR_REPO_URI:
+        print("ERROR: CLOUD_RUN_ECR_REPO_URI not set. Run:", file=sys.stderr)
+        print("  export CLOUD_RUN_ECR_REPO_URI=<account>.dkr.ecr.<region>.amazonaws.com/<repo>", file=sys.stderr)
+        sys.exit(1)
+    return ECR_REPO_URI
+
+
+def cmd_build(args):
+    """Build the Docker image for remote execution."""
+    tag = _resolve_image_tag(args.tag)
+    ecr_repo = _resolve_ecr_repo()
+    full_tag = f"{ecr_repo}:{tag}"
+    latest_tag = f"{ecr_repo}:latest"
+
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+    platform = args.platform or "linux/amd64"
+
+    # Always dual-tag: requested tag + latest
+    cmd = ["docker", "buildx", "build", "--platform", platform,
+           "-t", full_tag, "-t", latest_tag]
+    if args.no_cache:
+        cmd.append("--no-cache")
+    if args.push:
+        cmd.append("--push")
+    cmd.append(project_root)
+
+    print(f"Building: {full_tag}")
+    if tag != "latest":
+        print(f"  Also tagging as: {latest_tag}")
+    print(f"  Platform: {platform}")
+    print(f"  Context:  {project_root}")
+    result = subprocess.run(cmd, cwd=project_root)
+    if result.returncode != 0:
+        print(f"Build failed with exit code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    print(f"\nImage built: {full_tag}")
+    if not args.push:
+        print(f"Push with: cloud-run push --tag {tag}")
+
+
+def cmd_push(args):
+    """Authenticate to ECR and push the Docker image."""
+    tag = _resolve_image_tag(args.tag)
+    ecr_repo = _resolve_ecr_repo()
+    full_tag = f"{ecr_repo}:{tag}"
+    latest_tag = f"{ecr_repo}:latest"
+
+    # Extract registry hostname from repo URI
+    registry = ecr_repo.split("/")[0]
+
+    # ECR login
+    print(f"Authenticating to ECR: {registry}")
+    login_pw = subprocess.run(
+        ["aws", "ecr", "get-login-password", "--region", AWS_REGION],
+        capture_output=True, text=True, timeout=30,
+    )
+    if login_pw.returncode != 0:
+        print(f"ECR login failed: {login_pw.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    docker_login = subprocess.run(
+        ["docker", "login", "--username", "AWS", "--password-stdin", registry],
+        input=login_pw.stdout, capture_output=True, text=True, timeout=30,
+    )
+    if docker_login.returncode != 0:
+        print(f"Docker login failed: {docker_login.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    # Push the requested tag
+    print(f"Pushing: {full_tag}")
+    result = subprocess.run(["docker", "push", full_tag])
+    if result.returncode != 0:
+        print(f"Push failed with exit code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+    print(f"  Pushed: {full_tag}")
+
+    # Always also push :latest so ec2-bootstrap default works
+    if tag != "latest":
+        print(f"Tagging and pushing: {latest_tag}")
+        subprocess.run(["docker", "tag", full_tag, latest_tag], check=True)
+        result = subprocess.run(["docker", "push", latest_tag])
+        if result.returncode != 0:
+            print(f"WARNING: Failed to push {latest_tag} (non-fatal)", file=sys.stderr)
+        else:
+            print(f"  Pushed: {latest_tag}")
+
+    print(f"\nDone. Image available as {full_tag} and {latest_tag}")
+
+
+def cmd_snapshot_list(args):
+    """List EBS snapshots tagged with ManagedBy=cloud-run."""
+    result = subprocess.run(
+        [
+            "aws", "ec2", "describe-snapshots",
+            "--filters", "Name=tag:ManagedBy,Values=cloud-run",
+            "--query", "Snapshots[*].{ID:SnapshotId,Size:VolumeSize,State:State,Desc:Description,Date:StartTime}",
+            "--output", "table",
+            "--region", AWS_REGION,
+        ],
+        timeout=30,
+    )
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+def cmd_snapshot_create(args):
+    """Print manual steps to create an EBS data snapshot."""
+    print("EBS data snapshot creation (one-time manual process):")
+    print()
+    print("1. Launch a temporary EC2 instance with a 60GB gp3 volume")
+    print("2. Attach and mount the volume:")
+    print("     sudo mkfs.ext4 /dev/xvdf && sudo mount /dev/xvdf /data")
+    print("3. Sync MBO data to the volume:")
+    print("     aws s3 sync s3://kenoma-labs-research/DATA/ /data/")
+    print("4. Unmount and create snapshot:")
+    print("     sudo umount /data")
+    print("     aws ec2 create-snapshot --volume-id <vol-id> \\")
+    print("       --description 'MBO MES 2022 dataset' \\")
+    print("       --tag-specifications 'ResourceType=snapshot,Tags=[{Key=ManagedBy,Value=cloud-run},{Key=Project,Value=orchestration-kit}]'")
+    print("5. Set the snapshot ID:")
+    print("     export CLOUD_RUN_EBS_SNAPSHOT_ID=snap-xxxxxxxxx")
+    print("6. Terminate the temporary instance")
+
+
+# ---------------------------------------------------------------------------
+# Batch commands
+# ---------------------------------------------------------------------------
+
+def cmd_batch_run(args):
+    from cloud import batch as batch_mod
+    specs = args.specs.split(",")
+    backend_name = args.backend or "aws"
+    gpu_mode = getattr(args, "gpu", False)
+    if gpu_mode:
+        backend_name = "aws"
+    instance_type = args.instance_type or ("g5.xlarge" if gpu_mode else "c7a.8xlarge")
+    backend = _get_backend(backend_name)
+    project_root = args.project_root or os.environ.get("PROJECT_ROOT", os.getcwd())
+    data_dirs = args.data_dirs.split(",") if args.data_dirs else None
+    env_vars = {}
+    if args.env:
+        for e in args.env:
+            k, _, v = e.partition("=")
+            env_vars[k] = v
+    result = batch_mod.launch_batch(
+        specs=specs,
+        command=args.command,
+        backend=backend,
+        backend_name=backend_name,
+        project_root=project_root,
+        instance_type=instance_type,
+        data_dirs=data_dirs,
+        sync_back=args.sync_back,
+        output_base=args.output_dir,
+        use_spot=not args.on_demand,
+        max_hours=args.max_hours,
+        env_vars=env_vars,
+        max_instances=args.max_instances,
+        max_cost=args.max_cost,
+        gpu_mode=gpu_mode,
+        image_tag=getattr(args, "image_tag", None),
+    )
+    if getattr(args, "json_output", False):
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Batch {result['batch_id']}: {result['status']}")
+        for spec, run_id in result.get("runs", {}).items():
+            print(f"  {spec}: {run_id}")
+
+
+def cmd_batch_status(args):
+    from cloud import batch as batch_mod
+    result = batch_mod.poll_batch(args.batch_id)
+    if getattr(args, "json_output", False):
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Batch: {result['batch_id']}  Status: {result['status']}")
+        for spec, run_id in result.get("runs", {}).items():
+            print(f"  {spec}: {run_id}")
+
+
+def cmd_batch_pull(args):
+    from cloud import batch as batch_mod
+    result = batch_mod.pull_batch(args.batch_id, args.output_dir)
+    print(f"Pulled {len(result)} result(s)")
+
+
+def cmd_batch_ls(args):
+    from cloud import batch as batch_mod
+    batches = batch_mod.list_batches()
+    if not batches:
+        print("No tracked batches.")
+        return
+    fmt = "{:<40}  {:<12}  {:<6}  {}"
+    print(fmt.format("BATCH_ID", "STATUS", "RUNS", "STARTED"))
+    print("-" * 80)
+    for b in batches:
+        print(fmt.format(
+            b.get("batch_id", "?"),
+            b.get("status", "?"),
+            str(len(b.get("specs", []))),
+            b.get("started_at", "?")[:19],
+        ))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _hourly_rate(instance_type: str) -> float:
+    """Estimate hourly cost: GPU instances ~$0.50/hr, CPU ~$0.10/hr."""
+    return 0.50 if "g" in instance_type else 0.10
+
 
 def _get_backend(name: str):
     if name == "aws":
@@ -298,6 +634,43 @@ def _print_run(r: dict):
         print(f"Exit code:  {r['exit_code']}")
     if r.get("elapsed_seconds"):
         print(f"Elapsed:    {r['elapsed_seconds']//60}m{r['elapsed_seconds']%60}s")
+
+    # Live elapsed time and cost estimate for running instances
+    if r.get("status") in ("running", "provisioning") and r.get("started_at"):
+        try:
+            started = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
+            elapsed_secs = (datetime.now(timezone.utc) - started).total_seconds()
+            elapsed_hrs = elapsed_secs / 3600
+            print(f"Elapsed:    {elapsed_hrs:.1f}h (live)")
+            hourly_rate = _hourly_rate(r.get("instance_type", ""))
+            cost = elapsed_hrs * hourly_rate
+            print(f"Est. Cost:  ${cost:.2f} (@ ${hourly_rate:.2f}/hr)")
+        except (ValueError, TypeError):
+            pass
+
+    # Heartbeat info for running instances
+    if r.get("status") in ("running", "provisioning"):
+        try:
+            heartbeat = s3.check_heartbeat(r["run_id"])
+            if heartbeat:
+                print(f"Heartbeat:  {heartbeat['timestamp']} ({heartbeat['age_seconds']}s ago)")
+                if heartbeat["age_seconds"] > 600:
+                    print(f"  WARNING: heartbeat stale (>{heartbeat['age_seconds']}s)")
+            else:
+                print(f"Heartbeat:  none")
+        except Exception:
+            pass
+
+        # Show last log lines
+        try:
+            log_lines = s3.tail_log(r["run_id"], lines=3)
+            if log_lines:
+                print(f"Last log:")
+                for line in log_lines.split("\n"):
+                    print(f"  {line}")
+        except Exception:
+            pass
+
     if r.get("local_results_dir"):
         print(f"Results:    {r['local_results_dir']}")
     if r.get("error"):
@@ -320,7 +693,6 @@ def main():
     p_run.add_argument("command", help="Shell command to execute on remote instance")
     p_run.add_argument("--spec", help="Experiment spec file (for compute profile)")
     p_run.add_argument("--backend", choices=["aws", "runpod"], help="Force backend")
-    p_run.add_argument("--runtime", choices=list(VALID_RUNTIMES), default=None, help=f"Runtime environment (default: from spec or '{DEFAULT_RUNTIME}')")
     p_run.add_argument("--instance-type", help="Override instance type")
     p_run.add_argument("--data-dirs", help="Comma-separated local dirs to upload")
     p_run.add_argument("--sync-back", default="results", help="Remote dir to pull results from")
@@ -335,6 +707,10 @@ def main():
     p_run.add_argument("--env", action="append", help="Extra env vars (KEY=VALUE), repeatable")
     p_run.add_argument("--volume", help="RunPod network volume ID to mount at /workspace")
     p_run.add_argument("--allow-duplicate", action="store_true", help="Allow launching even if an instance with the same spec is running")
+    p_run.add_argument("--image-tag", help="ECR image tag to use (default: git SHA)")
+    p_run.add_argument("--gpu", action="store_true", help="Use GPU instance with PyTorch Deep Learning AMI (no Docker)")
+    p_run.add_argument("--validate", metavar="SCRIPT", help="Validate script before cloud execution")
+    p_run.add_argument("--skip-smoke", action="store_true", help="Skip smoke test (syntax + imports only)")
     p_run.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     p_run.set_defaults(func=cmd_run)
 
@@ -356,6 +732,13 @@ def main():
     # --- gc ---
     p_gc = sub.add_parser("gc", help="Garbage-collect orphaned resources")
     p_gc.set_defaults(func=cmd_gc)
+
+    # --- logs ---
+    p_logs = sub.add_parser("logs", help="Tail experiment log from S3")
+    p_logs.add_argument("run_id", help="Run ID")
+    p_logs.add_argument("--lines", "-n", type=int, default=50, help="Number of lines (default 50)")
+    p_logs.add_argument("--follow", "-f", action="store_true", help="Follow log output (poll every 10s)")
+    p_logs.set_defaults(func=cmd_logs)
 
     # --- terminate ---
     p_term = sub.add_parser("terminate", help="Force-terminate a run")
@@ -393,6 +776,64 @@ def main():
     p_vl = vol_sub.add_parser("ls", help="List network volumes")
     p_vl.set_defaults(func=cmd_volume_ls)
 
+    # --- build ---
+    p_build = sub.add_parser("build", help="Build Docker image for remote execution")
+    p_build.add_argument("--tag", help="Image tag (default: git SHA)")
+    p_build.add_argument("--platform", default="linux/amd64", help="Target platform (default: linux/amd64)")
+    p_build.add_argument("--no-cache", action="store_true", help="Build without Docker cache")
+    p_build.add_argument("--push", action="store_true", help="Push to ECR after building")
+    p_build.add_argument("--project-root", help="Project root (default: cwd or $PROJECT_ROOT)")
+    p_build.set_defaults(func=cmd_build)
+
+    # --- push ---
+    p_push = sub.add_parser("push", help="Push Docker image to ECR")
+    p_push.add_argument("--tag", help="Image tag (default: git SHA)")
+    p_push.set_defaults(func=cmd_push)
+
+    # --- snapshot ---
+    p_snap = sub.add_parser("snapshot", help="Manage EBS data snapshots")
+    snap_sub = p_snap.add_subparsers(dest="snap_cmd")
+    p_snap_ls = snap_sub.add_parser("list", help="List EBS snapshots tagged with ManagedBy=cloud-run")
+    p_snap_ls.set_defaults(func=cmd_snapshot_list)
+    p_snap_create = snap_sub.add_parser("create", help="Print manual steps to create an EBS data snapshot")
+    p_snap_create.set_defaults(func=cmd_snapshot_create)
+
+    # --- batch ---
+    p_batch = sub.add_parser("batch", help="Parallel batch execution")
+    batch_sub = p_batch.add_subparsers(dest="batch_cmd")
+
+    p_br = batch_sub.add_parser("run", help="Launch batch of experiments in parallel")
+    p_br.add_argument("command", help="Shell command to execute on each instance")
+    p_br.add_argument("--specs", required=True, help="Comma-separated spec file paths")
+    p_br.add_argument("--max-instances", type=int, default=5, help="Max concurrent instances (default: 5)")
+    p_br.add_argument("--max-cost", type=float, help="Reject if estimated total cost exceeds this (USD)")
+    p_br.add_argument("--backend", choices=["aws", "runpod"])
+    p_br.add_argument("--instance-type")
+    p_br.add_argument("--data-dirs")
+    p_br.add_argument("--sync-back", default="results")
+    p_br.add_argument("--output-dir")
+    p_br.add_argument("--project-root")
+    p_br.add_argument("--on-demand", action="store_true")
+    p_br.add_argument("--max-hours", type=float, default=DEFAULT_MAX_HOURS)
+    p_br.add_argument("--env", action="append")
+    p_br.add_argument("--gpu", action="store_true")
+    p_br.add_argument("--image-tag")
+    p_br.add_argument("--json", dest="json_output", action="store_true")
+    p_br.set_defaults(func=cmd_batch_run)
+
+    p_bs = batch_sub.add_parser("status", help="Check batch status")
+    p_bs.add_argument("batch_id", help="Batch ID")
+    p_bs.add_argument("--json", dest="json_output", action="store_true")
+    p_bs.set_defaults(func=cmd_batch_status)
+
+    p_bp = batch_sub.add_parser("pull", help="Pull results for all runs in a batch")
+    p_bp.add_argument("batch_id", help="Batch ID")
+    p_bp.add_argument("--output-dir")
+    p_bp.set_defaults(func=cmd_batch_pull)
+
+    p_bl = batch_sub.add_parser("ls", help="List tracked batches")
+    p_bl.set_defaults(func=cmd_batch_ls)
+
     args = parser.parse_args()
 
     if not args.subcmd:
@@ -401,6 +842,14 @@ def main():
 
     if args.subcmd == "volume" and not getattr(args, "vol_cmd", None):
         p_vol.print_help()
+        sys.exit(1)
+
+    if args.subcmd == "snapshot" and not getattr(args, "snap_cmd", None):
+        p_snap.print_help()
+        sys.exit(1)
+
+    if args.subcmd == "batch" and not getattr(args, "batch_cmd", None):
+        p_batch.print_help()
         sys.exit(1)
 
     args.func(args)

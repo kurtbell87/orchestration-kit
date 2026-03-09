@@ -16,6 +16,9 @@ from .config import (
     POLL_INTERVAL_SECONDS,
     STATE_DIR,
     RESOURCE_TAGS,
+    ECR_REPO_URI,
+    EBS_DATA_SNAPSHOT_ID,
+    IAM_INSTANCE_PROFILE,
 )
 from . import s3 as s3_helper
 from . import state as project_state
@@ -80,7 +83,9 @@ def run(
     tags: Optional[dict[str, str]] = None,
     network_volume_id: Optional[str] = None,
     allow_duplicate: bool = False,
-    runtime: str = "python",
+    image_tag: Optional[str] = None,
+    gpu_mode: bool = False,
+    batch_id: Optional[str] = None,
 ) -> dict:
     """Execute an experiment on a remote cloud instance.
 
@@ -102,12 +107,12 @@ def run(
         "s3_prefix": s3_prefix,
         "use_spot": use_spot,
         "max_hours": max_hours,
-        "runtime": runtime,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "pending",
         "instance_id": None,
         "exit_code": None,
         "finished_at": None,
+        "batch_id": batch_id or "",
     }
 
     if dry_run:
@@ -129,12 +134,35 @@ def run(
                     "Use --allow-duplicate to override."
                 )
 
-        # --- 1. Upload code + data ---
-        print(f"[{run_id}] Uploading code to S3...")
-        s3_helper.upload_code(project_root, run_id)
+        # --- 1. Resolve image URI or upload code ---
+        image_uri = None
+        ebs_snapshot_id = None
+        iam_instance_profile = None
+
+        if gpu_mode and backend_name == "aws":
+            # GPU mode: no Docker, run directly on PyTorch DL AMI
+            image_uri = None
+            ebs_snapshot_id = EBS_DATA_SNAPSHOT_ID or None
+            iam_instance_profile = IAM_INSTANCE_PROFILE or None
+            print(f"[{run_id}] GPU mode: PyTorch Deep Learning AMI (no Docker)")
+            if ebs_snapshot_id:
+                print(f"[{run_id}] EBS data snapshot: {ebs_snapshot_id}")
+        elif ECR_REPO_URI and backend_name == "aws":
+            # ECR/EBS path: skip code upload, use pre-built Docker image
+            tag = image_tag or "latest"
+            image_uri = f"{ECR_REPO_URI}:{tag}"
+            ebs_snapshot_id = EBS_DATA_SNAPSHOT_ID or None
+            iam_instance_profile = IAM_INSTANCE_PROFILE or None
+            print(f"[{run_id}] Using ECR image: {image_uri}")
+            if ebs_snapshot_id:
+                print(f"[{run_id}] EBS data snapshot: {ebs_snapshot_id}")
+        else:
+            # Legacy path: upload code tarball to S3
+            print(f"[{run_id}] Uploading code to S3...")
+            s3_helper.upload_code(project_root, run_id)
 
         if data_dirs:
-            print(f"[{run_id}] Uploading data dirs: {data_dirs}")
+            print(f"[{run_id}] Uploading extra data dirs: {data_dirs}")
             s3_helper.upload_dirs(data_dirs, run_id)
 
         # --- 2. Provision instance ---
@@ -148,8 +176,11 @@ def run(
             use_spot=use_spot,
             env_vars=env_vars or {},
             tags={**(tags or {}), "SpecFile": spec_file or ""},
-            runtime=runtime,
             network_volume_id=network_volume_id,
+            image_uri=image_uri,
+            ebs_snapshot_id=ebs_snapshot_id,
+            iam_instance_profile=iam_instance_profile,
+            gpu_mode=gpu_mode,
         )
         instance_id = backend.provision(config)
         _update_state(run_id, instance_id=instance_id, status="provisioning")
@@ -164,6 +195,7 @@ def run(
             spec_file=spec_file,
             launched_at=config.launched_at,
             max_hours=max_hours,
+            batch_id=batch_id,
         )
 
         # --- 3. Wait for ready ---
@@ -195,8 +227,24 @@ def run(
         raise
 
 
+def _get_backend_for_run(state: dict):
+    """Instantiate the appropriate backend for a run based on stored state."""
+    backend_name = state.get("backend", "aws")
+    if backend_name == "aws":
+        from .backends.aws import AWSBackend
+        return AWSBackend()
+    elif backend_name == "runpod":
+        from .backends.runpod import RunPodBackend
+        return RunPodBackend()
+    raise ValueError(f"Unknown backend: {backend_name}")
+
+
 def poll_status(run_id: str) -> dict:
-    """Check the status of a detached run by polling S3 for exit_code."""
+    """Check the status of a detached run by polling S3 for exit_code.
+
+    Enhanced: when no exit_code is found, checks EC2 instance state and
+    includes heartbeat information.
+    """
     state = _load_state(run_id)
 
     if state["status"] in ("completed", "failed", "error"):
@@ -211,7 +259,81 @@ def poll_status(run_id: str) -> dict:
             status=new_status,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-    return state
+        return state
+
+    # No exit_code found — check instance health
+    result = dict(state)
+    result["status"] = "running"
+
+    # Check EC2 instance state
+    try:
+        backend = _get_backend_for_run(state)
+        instance_id = state.get("instance_id")
+        if instance_id:
+            instance_state = backend.status(instance_id)
+            if instance_state in ("terminated", "stopped", "shutting-down"):
+                result["status"] = "terminated_no_results"
+                result["instance_state"] = instance_state
+                result["message"] = "Instance terminated without writing results"
+                _update_state(run_id, status="terminated_no_results")
+                return result
+    except Exception:
+        pass
+
+    # Check heartbeat
+    try:
+        heartbeat = s3_helper.check_heartbeat(run_id)
+        if heartbeat:
+            result["last_heartbeat"] = heartbeat["timestamp"]
+            result["heartbeat_age_seconds"] = heartbeat["age_seconds"]
+            if heartbeat["age_seconds"] > 600:
+                result["warning"] = "heartbeat_stale"
+    except Exception:
+        pass
+
+    return result
+
+
+def gc_stale_runs(backend) -> int:
+    """Garbage-collect stale runs: check EC2 instance state for running entries.
+
+    For terminated instances with no exit_code, writes exit_code=137 to S3.
+    Returns count of cleaned-up runs.
+    """
+    runs = list_runs()
+    cleaned = 0
+
+    for run in runs:
+        if run.get("status") not in ("running", "provisioning"):
+            continue
+
+        run_id = run["run_id"]
+
+        # Check if exit_code already exists
+        if s3_helper.check_exit_code(run_id) is not None:
+            continue
+
+        # Check instance state
+        instance_id = run.get("instance_id")
+        if not instance_id:
+            continue
+
+        try:
+            instance_state = backend.status(instance_id)
+            if instance_state in ("terminated", "stopped", "shutting-down"):
+                # Write exit_code=137 (terminated) to S3
+                s3_helper.write_marker(run_id, "exit_code", "137")
+                _update_state(
+                    run_id,
+                    status="terminated_no_results",
+                    exit_code=137,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                )
+                cleaned += 1
+        except Exception:
+            pass
+
+    return cleaned
 
 
 def pull_results(run_id: str, local_dir: Optional[str] = None) -> str:

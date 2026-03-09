@@ -13,19 +13,24 @@ log = logging.getLogger(__name__)
 
 from ..config import (
     AWS_REGION,
-    EC2_RUNTIME_IMAGES,
     SSH_KEY_NAME,
     RESOURCE_TAGS,
     S3_BUCKET,
     S3_RUNS_PREFIX,
+    EBS_DATA_DEVICE_NAME,
+    ECS_OPTIMIZED_AMI_SSM_PARAM,
 )
 from .base import ComputeBackend, InstanceConfig
 
-# Amazon Linux 2023 AMI lookup via SSM parameter
+# Amazon Linux 2023 AMI lookup via SSM parameter (fallback if ECS-optimized unavailable)
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
-# Bootstrap script template path (relative to this file)
+# Bootstrap script template paths (relative to this file)
 BOOTSTRAP_SCRIPT = Path(__file__).parent.parent / "scripts" / "ec2-bootstrap.sh"
+BOOTSTRAP_SCRIPT_GPU = Path(__file__).parent.parent / "scripts" / "ec2-bootstrap-gpu.sh"
+
+# PyTorch Deep Learning AMI pattern for GPU instances (no Docker needed)
+PYTORCH_DL_AMI_PATTERN = "Deep Learning OSS Nvidia Driver AMI GPU PyTorch * (Ubuntu 24.04) *"
 
 
 class AWSBackend(ComputeBackend):
@@ -55,7 +60,7 @@ class AWSBackend(ComputeBackend):
             )
             return existing
 
-        ami_id = self._get_latest_ami()
+        ami_id = self._get_latest_ami(config)
         sg_id = self._ensure_security_group(config.run_id)
         user_data = self._render_user_data(config)
 
@@ -92,11 +97,40 @@ class AWSBackend(ComputeBackend):
             MaxCount=1,
             TagSpecifications=tag_specs,
             ClientToken=client_token,
-            # Auto-terminate when the instance shuts itself down
             InstanceInitiatedShutdownBehavior="terminate",
-            # IAM role for S3 access (if instance profile exists)
-            # IamInstanceProfile={"Name": "..."},  # uncomment if IAM profile is set up
         )
+
+        # IAM instance profile for ECR pull + S3 access
+        if config.iam_instance_profile:
+            launch_kwargs["IamInstanceProfile"] = {"Name": config.iam_instance_profile}
+
+        # Block device mappings: root volume expansion + optional EBS data volume
+        block_devices = []
+
+        # GPU mode: expand root volume (DL AMI default is 20GB, need more for conda + data)
+        if config.gpu_mode:
+            block_devices.append({
+                "DeviceName": "/dev/sda1",
+                "Ebs": {
+                    "VolumeSize": 100,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            })
+
+        # EBS data volume from snapshot (pre-loaded dataset)
+        if config.ebs_snapshot_id:
+            block_devices.append({
+                "DeviceName": EBS_DATA_DEVICE_NAME,
+                "Ebs": {
+                    "SnapshotId": config.ebs_snapshot_id,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            })
+
+        if block_devices:
+            launch_kwargs["BlockDeviceMappings"] = block_devices
 
         if config.use_spot:
             launch_kwargs["InstanceMarketOptions"] = {
@@ -258,18 +292,50 @@ class AWSBackend(ComputeBackend):
                     return inst["InstanceId"]
         return None
 
-    def _get_latest_ami(self) -> str:
-        """Get latest Amazon Linux 2023 x86_64 AMI.
+    def _get_latest_ami(self, config: InstanceConfig | None = None) -> str:
+        """Get the best AMI for this run.
 
-        Tries SSM parameter first, falls back to ec2:DescribeImages.
+        GPU mode: PyTorch Deep Learning AMI (no Docker needed).
+        Docker mode: ECS-optimized AMI (Docker pre-installed).
+        Fallback: standard AL2023 AMI.
         """
+        # GPU mode: find latest PyTorch Deep Learning AMI
+        if config and config.gpu_mode:
+            resp = self._ec2.describe_images(
+                Owners=["amazon"],
+                Filters=[
+                    {"Name": "name", "Values": [PYTORCH_DL_AMI_PATTERN]},
+                    {"Name": "state", "Values": ["available"]},
+                    {"Name": "architecture", "Values": ["x86_64"]},
+                ],
+            )
+            images = sorted(resp["Images"], key=lambda i: i["CreationDate"])
+            if not images:
+                raise RuntimeError(
+                    f"No PyTorch Deep Learning AMI found matching: {PYTORCH_DL_AMI_PATTERN}"
+                )
+            ami_id = images[-1]["ImageId"]
+            log.info("Using PyTorch DL AMI: %s (%s)", ami_id, images[-1]["Name"])
+            return ami_id
+
+        # Try ECS-optimized AMI first (Docker pre-installed)
+        if config and config.image_uri:
+            try:
+                resp = self._ssm.get_parameter(Name=ECS_OPTIMIZED_AMI_SSM_PARAM)
+                ami_id = resp["Parameter"]["Value"]
+                log.info("Using ECS-optimized AMI: %s", ami_id)
+                return ami_id
+            except Exception:
+                log.warning("ECS-optimized AMI lookup failed, falling back to AL2023")
+
+        # Standard AL2023 AMI
         try:
             resp = self._ssm.get_parameter(Name=AL2023_SSM_PARAM)
             return resp["Parameter"]["Value"]
         except Exception:
             pass
 
-        # Fallback: query EC2 directly
+        # Last resort: query EC2 directly
         resp = self._ec2.describe_images(
             Owners=["amazon"],
             Filters=[
@@ -333,12 +399,9 @@ class AWSBackend(ComputeBackend):
 
     def _render_user_data(self, config: InstanceConfig) -> str:
         """Render the bootstrap script with run-specific variables."""
-        template = BOOTSTRAP_SCRIPT.read_text()
+        script_path = BOOTSTRAP_SCRIPT_GPU if config.gpu_mode else BOOTSTRAP_SCRIPT
+        template = script_path.read_text()
 
-        # Resolve Docker image based on runtime
-        docker_image = EC2_RUNTIME_IMAGES.get(config.runtime, "python:3.12-slim")
-
-        # Inject variables at the top of the script
         var_block = "\n".join([
             f'export RUN_ID="{config.run_id}"',
             f'export S3_BUCKET="{S3_BUCKET}"',
@@ -346,23 +409,27 @@ class AWSBackend(ComputeBackend):
             f'export AWS_DEFAULT_REGION="{AWS_REGION}"',
             f'export EXPERIMENT_COMMAND="{config.command}"',
             f'export MAX_HOURS="{config.max_hours}"',
-            f'export DOCKER_IMAGE="{docker_image}"',
-            f'export RUNTIME="{config.runtime}"',
         ])
 
-        # Forward local AWS credentials so the instance can access S3.
-        # This is needed when no IAM instance profile is attached.
-        import boto3 as _boto3
-        _session = _boto3.Session()
-        _creds = _session.get_credentials()
-        if _creds:
-            _frozen = _creds.get_frozen_credentials()
-            var_block += f'\nexport AWS_ACCESS_KEY_ID="{_frozen.access_key}"'
-            var_block += f'\nexport AWS_SECRET_ACCESS_KEY="{_frozen.secret_key}"'
-            if _frozen.token:
-                var_block += f'\nexport AWS_SESSION_TOKEN="{_frozen.token}"'
+        # ECR image URI and EBS device for Docker-based execution
+        if config.image_uri:
+            var_block += f'\nexport IMAGE_URI="{config.image_uri}"'
+        if config.ebs_snapshot_id:
+            var_block += f'\nexport EBS_DATA_DEVICE="{EBS_DATA_DEVICE_NAME}"'
 
-        # Add any extra env vars
+        # Only forward AWS credentials when no IAM instance profile is attached
+        if not config.iam_instance_profile:
+            import boto3 as _boto3
+            _session = _boto3.Session()
+            _creds = _session.get_credentials()
+            if _creds:
+                _frozen = _creds.get_frozen_credentials()
+                var_block += f'\nexport AWS_ACCESS_KEY_ID="{_frozen.access_key}"'
+                var_block += f'\nexport AWS_SECRET_ACCESS_KEY="{_frozen.secret_key}"'
+                if _frozen.token:
+                    var_block += f'\nexport AWS_SESSION_TOKEN="{_frozen.token}"'
+
+        # Extra env vars
         for k, v in config.env_vars.items():
             var_block += f'\nexport {k}="{v}"'
 
