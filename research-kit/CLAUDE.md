@@ -143,7 +143,41 @@ Program mode automatically:
 - Picks the highest-priority unblocked question from QUESTIONS.md
 - Runs a full SURVEY-FRAME-RUN-READ-LOG cycle
 - Records results in `program_state.json`
-- Stops when: all questions resolved, max cycles reached, GPU budget exhausted, or a handoff is emitted
+- Stops when: all questions resolved, max cycles reached, GPU/wall-clock budget exhausted, or a handoff is emitted
+
+### Overnight Mode
+
+For unattended autonomous execution (run overnight, review results in the morning):
+
+```bash
+# Overnight: auto-skip handoffs, 2h per-experiment time budget, macOS notification on completion
+./experiment.sh program --overnight
+
+# With explicit budgets:
+./experiment.sh program --overnight --max-cycles 20 --wall-hours 12
+
+# Full control:
+./experiment.sh program --time-budget 3600 --wall-hours 8 --skip-handoffs --max-cycles 15
+```
+
+**Overnight mode behavior:**
+- **Ratchet pattern:** After REFUTED/INCONCLUSIVE/ERROR, source code changes from the RUN agent are automatically reverted. Only CONFIRMED experiments keep their code changes. Results and state files are always preserved.
+- **Time budget:** Each RUN phase has a hard wall-clock limit (default 2h in overnight mode, or auto-derived as 2x the spec's `estimated_wall_hours`). Times out gracefully with partial metrics.
+- **Skip handoffs:** HANDOFF.md is auto-archived instead of pausing the loop.
+- **Wall-clock budget:** `--wall-hours` caps total program runtime.
+- **Synthesis on exit:** Every termination path (max cycles, budget exhausted, interrupt, handoff) generates a synthesis report.
+- **macOS notification:** Desktop notification on completion with summary.
+
+**Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--overnight` | — | Shorthand: `--skip-handoffs` + 2h time budget |
+| `--time-budget SECS` | 0 (auto) | Hard wall-clock limit per RUN phase |
+| `--wall-hours H` | 0 (unlimited) | Total wall-clock budget for the program loop |
+| `--skip-handoffs` | false | Auto-archive handoffs instead of pausing |
+| `--max-cycles N` | 10 | Max experiment cycles |
+| `--dry-run` | false | Preview without executing |
 
 ### Handoff Protocol
 

@@ -45,6 +45,9 @@ TEST_CMD="${TEST_CMD:-echo 'Set TEST_CMD for your project'}"       # Unit tests 
 MAX_GPU_HOURS="${MAX_GPU_HOURS:-4}"
 MAX_RUNS="${MAX_RUNS:-10}"
 
+# Time budget (seconds) for individual RUN phases. 0 = no limit.
+EXP_TIME_BUDGET="${EXP_TIME_BUDGET:-0}"
+
 # Log directory -- per-project isolation under /tmp
 # Uses repo basename + short hash of absolute path to prevent collisions
 # between projects with the same name in different locations.
@@ -598,8 +601,57 @@ IMPORTANT:
 - Local-only tasks (data loading verification, normalization checks, small sanity checks) are fine locally."
   fi
 
+  # ── Time budget enforcement ──
+  local run_time_budget="$EXP_TIME_BUDGET"
+
+  # Auto-derive from spec's estimated_wall_hours if not explicitly set
+  if (( run_time_budget == 0 )); then
+    run_time_budget=$(python3 -c "
+import re
+with open('$results_path/spec.md') as f:
+    content = f.read()
+m = re.search(r'estimated_wall_hours:\s*([0-9.]+)', content)
+if m:
+    hours = float(m.group(1))
+    if hours > 0:
+        # 2x safety margin, minimum 15 minutes
+        print(max(int(hours * 3600 * 2), 900))
+    else:
+        print(0)
+else:
+    print(0)
+" 2>/dev/null || echo "0")
+  fi
+
+  local timeout_cmd=""
+  if (( run_time_budget > 0 )); then
+    # macOS: prefer gtimeout from coreutils
+    if command -v gtimeout &>/dev/null; then
+      timeout_cmd="gtimeout --signal=TERM --kill-after=30 ${run_time_budget}"
+    elif command -v timeout &>/dev/null; then
+      timeout_cmd="timeout --signal=TERM --kill-after=30 ${run_time_budget}"
+    else
+      echo -e "${YELLOW}Warning: 'timeout'/'gtimeout' not found. Install coreutils for time budget enforcement.${NC}"
+      echo -e "${YELLOW}Proceeding without time limit.${NC}"
+    fi
+    if [[ -n "$timeout_cmd" ]]; then
+      echo -e "  ${YELLOW}Time budget:${NC} ${run_time_budget}s"
+    fi
+  fi
+
+  local time_budget_advisory=""
+  if (( run_time_budget > 0 )); then
+    local budget_hours
+    budget_hours=$(python3 -c "print(f'{$run_time_budget / 3600:.1f}')" 2>/dev/null || echo "?")
+    time_budget_advisory="
+## Time Budget
+This RUN phase has a hard wall-clock budget of ${run_time_budget} seconds (~${budget_hours}h).
+The process will be killed if it exceeds this limit. Prioritize getting metrics.json written
+early with partial results rather than risking a timeout with no output."
+  fi
+
   local exit_code=0
-  claude \
+  $timeout_cmd claude \
     --output-format stream-json \
     --append-system-prompt "$(cat "$PROMPT_DIR/run.md")
 
@@ -614,11 +666,32 @@ IMPORTANT:
 - Test command (unit tests): $TEST_CMD
 - Max GPU hours: $MAX_GPU_HOURS
 - Max runs: $MAX_RUNS
-${compute_advisory}
+${compute_advisory}${time_budget_advisory}
 Read the experiment spec first. Implement and execute the experiment. Write ALL metrics to $results_path/metrics.json." \
     --allowed-tools "Read,Write,Edit,Bash,Glob,Grep" \
     -p "Read the experiment spec, implement, and execute. Write all metrics to $results_path/metrics.json" \
     > "$EXP_LOG_DIR/run.log" 2>&1 || exit_code=$?
+
+  # Handle timeout (exit 124 from timeout/gtimeout, 137 from SIGKILL)
+  if (( exit_code == 124 || exit_code == 137 )); then
+    echo -e "${RED}RUN phase timed out after ${run_time_budget}s.${NC}"
+    # Write timeout metrics if the agent didn't manage to write any
+    if [[ ! -f "$results_path/metrics.json" ]]; then
+      python3 -c "
+import json, datetime
+m = {
+    'experiment': '$(experiment_id_from_spec "$spec_file")',
+    'timestamp': datetime.datetime.now().isoformat(),
+    'abort_triggered': True,
+    'abort_reason': 'wall_clock_timeout_${run_time_budget}s',
+    'resource_usage': {'wall_clock_seconds': int('$run_time_budget')},
+    'notes': 'RUN phase killed by time budget enforcement. No metrics collected.'
+}
+with open('$results_path/metrics.json', 'w') as f:
+    json.dump(m, f, indent=2)
+" 2>/dev/null || true
+    fi
+  fi
 
   _phase_summary "run" "$exit_code"
 }
@@ -842,6 +915,42 @@ run_synthesize() {
 
   export EXP_PHASE="synthesize"
 
+  # Compute program statistics for synthesis context
+  local program_stats=""
+  if [[ -f "${PROGRAM_STATE_FILE:-${_SD}/program_state.json}" ]]; then
+    program_stats=$(python3 -c "
+import json, datetime
+try:
+    with open('${PROGRAM_STATE_FILE:-${_SD}/program_state.json}') as f:
+        s = json.load(f)
+    started = s.get('started_at', 'N/A')
+    cycles = s.get('cycles_completed', 0)
+    gpu = s.get('gpu_hours_used', 0)
+    reverts = s.get('reverts', 0)
+    verdicts = {}
+    for entry in s.get('cycle_log', []):
+        v = entry.get('verdict', 'UNKNOWN')
+        verdicts[v] = verdicts.get(v, 0) + 1
+    elapsed = 'N/A'
+    try:
+        start = datetime.datetime.fromisoformat(started)
+        elapsed = f'{(datetime.datetime.now() - start).total_seconds() / 3600:.1f}h'
+    except:
+        pass
+    verdict_str = ', '.join(f'{k}: {v}' for k, v in sorted(verdicts.items()))
+    print(f'Cycles: {cycles}, GPU hours: {gpu:.1f}, Wall time: {elapsed}, Reverts: {reverts}, Verdicts: [{verdict_str}]')
+except:
+    print('N/A')
+" 2>/dev/null || echo "N/A")
+  fi
+
+  local program_context=""
+  if [[ -n "$program_stats" && "$program_stats" != "N/A" ]]; then
+    program_context="
+## Program Statistics
+$program_stats"
+  fi
+
   local exit_code=0
   claude \
     --output-format stream-json \
@@ -855,7 +964,7 @@ run_synthesize() {
 - Completed handoffs: ${completed_handoffs:-0} file(s) in $_SD/handoffs/completed/ (use Glob to discover)
 - Program state: $state_info
 - Results directory: $RESULTS_DIR
-
+${program_context}
 Read $_SD/RESEARCH_LOG.md for summaries first. Use Glob to discover analysis files, then selectively read those you need detail on." \
     --allowed-tools "Read,Write,Glob,Grep" \
     -p "Synthesize all experiment results into $_SD/SYNTHESIS.md. Trigger: $trigger" \
@@ -884,7 +993,9 @@ state = {
     'started_at': datetime.datetime.now().isoformat(),
     'last_cycle_at': None,
     'question_history': {},
-    'cycle_log': []
+    'cycle_log': [],
+    'reverts': 0,
+    'termination_reason': None
 }
 with open('$PROGRAM_STATE_FILE', 'w') as f:
     json.dump(state, f, indent=2)
@@ -896,7 +1007,7 @@ with open('$PROGRAM_STATE_FILE', 'w') as f:
 }
 
 record_cycle_result() {
-  local question="$1" verdict="$2" gpu_hours="$3" spec_file="$4"
+  local question="$1" verdict="$2" gpu_hours="$3" spec_file="$4" reverted="${5:-false}"
   python3 -c "
 import json, datetime
 with open('$PROGRAM_STATE_FILE') as f:
@@ -904,6 +1015,8 @@ with open('$PROGRAM_STATE_FILE') as f:
 state['cycles_completed'] += 1
 state['gpu_hours_used'] += float('$gpu_hours')
 state['last_cycle_at'] = datetime.datetime.now().isoformat()
+if '$reverted' == 'true':
+    state['reverts'] = state.get('reverts', 0) + 1
 q = '''$question'''
 if q not in state['question_history']:
     state['question_history'][q] = []
@@ -914,7 +1027,8 @@ state['cycle_log'].append({
     'verdict': '$verdict',
     'gpu_hours': float('$gpu_hours'),
     'spec_file': '$spec_file',
-    'timestamp': datetime.datetime.now().isoformat()
+    'timestamp': datetime.datetime.now().isoformat(),
+    'reverted': '$reverted' == 'true'
 })
 with open('$PROGRAM_STATE_FILE', 'w') as f:
     json.dump(state, f, indent=2)
@@ -1117,15 +1231,78 @@ question_to_slug() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//' | cut -c1-40
 }
 
+ratchet_revert() {
+  # Revert source code changes from the RUN agent after a REFUTED/ERROR experiment.
+  # Preserves: results/, experiments/, state files, research log, questions.
+  # Scope: SRC_DIR, CONFIGS_DIR, DATA_DIR — exactly the directories RUN agents modify.
+  echo -e "${YELLOW}Ratchet: reverting experimental code changes...${NC}"
+  unlock_all 2>/dev/null || true
+
+  local reverted_any=false
+
+  # Revert tracked changes in source directories
+  for dir in "$SRC_DIR" "$CONFIGS_DIR" "$DATA_DIR"; do
+    if [[ -d "$dir" ]]; then
+      local changed
+      changed=$(git diff --name-only -- "$dir" 2>/dev/null || true)
+      if [[ -n "$changed" ]]; then
+        git checkout -- "$dir" 2>/dev/null || true
+        reverted_any=true
+        echo -e "  ${BLUE}reverted tracked changes in:${NC} $dir"
+      fi
+      # Clean untracked files in source directories
+      local untracked
+      untracked=$(git ls-files --others --exclude-standard "$dir" 2>/dev/null || true)
+      if [[ -n "$untracked" ]]; then
+        git clean -fd "$dir" 2>/dev/null || true
+        reverted_any=true
+        echo -e "  ${BLUE}cleaned untracked files in:${NC} $dir"
+      fi
+    fi
+  done
+
+  if $reverted_any; then
+    echo -e "${GREEN}Ratchet: source directories restored to pre-experiment state.${NC}"
+  else
+    echo -e "${GREEN}Ratchet: no source changes to revert.${NC}"
+  fi
+}
+
+notify_completion() {
+  local reason="$1"
+  local summary="$2"
+
+  # Write completion marker
+  echo "$summary" > "$EXP_LOG_DIR/program_complete.txt"
+  echo -e "${GREEN}Program complete ($reason). Summary: $EXP_LOG_DIR/program_complete.txt${NC}"
+
+  # macOS notification
+  if command -v osascript &>/dev/null; then
+    osascript -e "display notification \"$summary\" with title \"Research Program Complete\" subtitle \"$reason\"" 2>/dev/null || true
+  fi
+}
+
 run_program() {
   local max_cycles="$MAX_PROGRAM_CYCLES"
   local dry_run=false
+  local skip_handoffs=false
+  local max_wall_hours="${MAX_PROGRAM_WALL_HOURS:-0}"
 
   # Parse arguments
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --max-cycles) max_cycles="$2"; shift 2 ;;
-      --dry-run)    dry_run=true; shift ;;
+      --max-cycles)     max_cycles="$2"; shift 2 ;;
+      --dry-run)        dry_run=true; shift ;;
+      --time-budget)    export EXP_TIME_BUDGET="$2"; shift 2 ;;
+      --wall-hours)     max_wall_hours="$2"; shift 2 ;;
+      --skip-handoffs)  skip_handoffs=true; shift ;;
+      --overnight)
+        skip_handoffs=true
+        # Default 2-hour per-experiment budget if not explicitly set
+        if [[ "${EXP_TIME_BUDGET:-0}" == "0" ]]; then
+          export EXP_TIME_BUDGET=7200
+        fi
+        shift ;;
       *)            echo -e "${RED}Unknown argument: $1${NC}" >&2; return 1 ;;
     esac
   done
@@ -1134,17 +1311,47 @@ run_program() {
   echo -e "${BOLD}${CYAN}======================================================${NC}"
   echo -e "${BOLD}${CYAN}  PROGRAM MODE -- Auto-advancing Research Loop${NC}"
   echo -e "${BOLD}${CYAN}======================================================${NC}"
-  echo -e "  Max cycles:     $max_cycles"
-  echo -e "  GPU budget:     $MAX_PROGRAM_GPU_HOURS hours"
+  echo -e "  Max cycles:         $max_cycles"
+  echo -e "  GPU budget:         $MAX_PROGRAM_GPU_HOURS hours"
+  echo -e "  Wall-clock budget:  ${max_wall_hours}h (0=unlimited)"
+  echo -e "  Time budget/run:    ${EXP_TIME_BUDGET}s (0=auto-derive from spec)"
+  echo -e "  Skip handoffs:      $skip_handoffs"
   echo -e "  Inconclusive threshold: $INCONCLUSIVE_THRESHOLD"
-  echo -e "  Dry run:        $dry_run"
+  echo -e "  Dry run:            $dry_run"
   echo ""
 
   init_program_state
   export _IN_PROGRAM_MODE=true
 
-  # SIGINT trap for clean interruption
-  trap 'echo -e "\n${YELLOW}Program loop interrupted. State saved in $PROGRAM_STATE_FILE.${NC}"; exit 130' INT
+  local _program_start_epoch
+  _program_start_epoch=$(date +%s)
+
+  # Record termination reason helper
+  _record_termination() {
+    local reason="$1"
+    python3 -c "
+import json
+try:
+    with open('$PROGRAM_STATE_FILE') as f:
+        state = json.load(f)
+    state['termination_reason'] = '$reason'
+    with open('$PROGRAM_STATE_FILE', 'w') as f:
+        json.dump(state, f, indent=2)
+except:
+    pass
+" 2>/dev/null || true
+  }
+
+  # SIGINT/SIGTERM trap: synthesize before exiting
+  trap '
+    echo -e "\n${YELLOW}Program loop interrupted. Generating synthesis...${NC}"
+    _record_termination "interrupted"
+    run_synthesize "interrupted" 2>/dev/null || true
+    local _elapsed=$(( $(date +%s) - _program_start_epoch ))
+    notify_completion "interrupted" "Program interrupted after $((_elapsed / 3600))h $(( (_elapsed % 3600) / 60 ))m"
+    echo -e "${YELLOW}State saved in $PROGRAM_STATE_FILE.${NC}"
+    exit 130
+  ' INT TERM
 
   while true; do
     local cycles_completed
@@ -1166,21 +1373,34 @@ with open('$PROGRAM_STATE_FILE') as f:
 
     # ── Termination check 1: HANDOFF.md exists ──
     if [[ -f "$_SD/HANDOFF.md" ]]; then
-      echo -e "${YELLOW}HANDOFF.md exists — program loop paused.${NC}"
-      echo -e "Resolve the handoff and run: ${BOLD}./experiment.sh complete-handoff${NC}"
-      echo -e "Then resume: ${BOLD}./experiment.sh program${NC}"
-      run_status
-      return 0
+      if $skip_handoffs; then
+        echo -e "${YELLOW}HANDOFF.md exists — skipping blocked question (--skip-handoffs).${NC}"
+        complete_handoff "$_SD/HANDOFF.md" 2>/dev/null || true
+      else
+        echo -e "${YELLOW}HANDOFF.md exists — program loop paused.${NC}"
+        echo -e "Resolve the handoff and run: ${BOLD}./experiment.sh complete-handoff${NC}"
+        echo -e "Then resume: ${BOLD}./experiment.sh program${NC}"
+        _record_termination "handoff_pause"
+        if ! $dry_run; then
+          run_synthesize "handoff_pause"
+        fi
+        local _elapsed=$(( $(date +%s) - _program_start_epoch ))
+        notify_completion "handoff_pause" "Paused for handoff after ${cycles_completed} cycles, $((_elapsed / 3600))h"
+        return 0
+      fi
     fi
 
     # ── Termination check 2: Max cycles reached ──
     if (( cycles_completed >= max_cycles )); then
       echo -e "${YELLOW}Max cycles reached ($max_cycles). Generating synthesis...${NC}"
+      _record_termination "max_cycles"
       if ! $dry_run; then
         run_synthesize "max_cycles"
       else
         echo -e "  ${BLUE}[dry-run] Would run: synthesize max_cycles${NC}"
       fi
+      local _elapsed=$(( $(date +%s) - _program_start_epoch ))
+      notify_completion "max_cycles" "Completed $cycles_completed cycles in $((_elapsed / 3600))h $(( (_elapsed % 3600) / 60 ))m"
       return 0
     fi
 
@@ -1189,11 +1409,14 @@ with open('$PROGRAM_STATE_FILE') as f:
     budget_exceeded=$(python3 -c "print('yes' if float('$gpu_hours_used') >= float('$MAX_PROGRAM_GPU_HOURS') else 'no')")
     if [[ "$budget_exceeded" == "yes" ]]; then
       echo -e "${YELLOW}GPU budget exhausted (${gpu_hours_used}h / ${MAX_PROGRAM_GPU_HOURS}h). Generating synthesis...${NC}"
+      _record_termination "budget_exhausted"
       if ! $dry_run; then
         run_synthesize "budget_exhausted"
       else
         echo -e "  ${BLUE}[dry-run] Would run: synthesize budget_exhausted${NC}"
       fi
+      local _elapsed=$(( $(date +%s) - _program_start_epoch ))
+      notify_completion "budget_exhausted" "GPU budget exhausted after ${cycles_completed} cycles"
       return 0
     fi
 
@@ -1202,12 +1425,32 @@ with open('$PROGRAM_STATE_FILE') as f:
     next_question=$(select_next_question)
     if [[ -z "$next_question" ]]; then
       echo -e "${GREEN}No unblocked questions remaining. Generating synthesis...${NC}"
+      _record_termination "all_resolved"
       if ! $dry_run; then
         run_synthesize "all_resolved"
       else
         echo -e "  ${BLUE}[dry-run] Would run: synthesize all_resolved${NC}"
       fi
+      local _elapsed=$(( $(date +%s) - _program_start_epoch ))
+      notify_completion "all_resolved" "All questions resolved after ${cycles_completed} cycles in $((_elapsed / 3600))h $(( (_elapsed % 3600) / 60 ))m"
       return 0
+    fi
+
+    # ── Termination check 5: Wall-clock budget ──
+    if [[ "$max_wall_hours" != "0" ]]; then
+      local _elapsed_secs=$(( $(date +%s) - _program_start_epoch ))
+      local _budget_secs
+      _budget_secs=$(python3 -c "print(int(float('$max_wall_hours') * 3600))" 2>/dev/null || echo "0")
+      if (( _elapsed_secs >= _budget_secs )); then
+        local _elapsed_h=$((_elapsed_secs / 3600))
+        echo -e "${YELLOW}Wall-clock budget exhausted (${_elapsed_h}h / ${max_wall_hours}h). Generating synthesis...${NC}"
+        _record_termination "wall_clock_exhausted"
+        if ! $dry_run; then
+          run_synthesize "wall_clock_exhausted"
+        fi
+        notify_completion "wall_clock_exhausted" "Wall-clock budget exhausted after ${cycles_completed} cycles in ${_elapsed_h}h"
+        return 0
+      fi
     fi
 
     # ── Pick next question and generate spec filename ──
@@ -1260,8 +1503,29 @@ with open('$PROGRAM_STATE_FILE') as f:
     ) || subshell_exit=$?
 
     if (( subshell_exit != 0 )); then
-      echo -e "${RED}Cycle failed (exit code: $subshell_exit). Recording ERROR and continuing...${NC}"
-      record_cycle_result "$next_question" "ERROR" "0" "$spec_file"
+      echo -e "${RED}Cycle failed (exit code: $subshell_exit). Reverting and continuing...${NC}"
+
+      # Write crash metrics if none exist
+      local results_path
+      results_path="$(results_dir_for_spec "$spec_file")"
+      if [[ ! -f "$results_path/metrics.json" ]]; then
+        mkdir -p "$results_path"
+        python3 -c "
+import json, datetime
+m = {
+    'experiment': '$(experiment_id_from_spec "$spec_file")',
+    'timestamp': datetime.datetime.now().isoformat(),
+    'abort_triggered': True,
+    'abort_reason': 'cycle_failure_exit_${subshell_exit}',
+    'notes': 'Cycle failed with exit code ${subshell_exit}. Automatically reverted.'
+}
+with open('$results_path/metrics.json', 'w') as f:
+    json.dump(m, f, indent=2)
+" 2>/dev/null || true
+      fi
+
+      record_cycle_result "$next_question" "ERROR" "0" "$spec_file" "true"
+      ratchet_revert
       continue
     fi
 
@@ -1271,6 +1535,9 @@ with open('$PROGRAM_STATE_FILE') as f:
       echo -e "${YELLOW}Log phase failed, but experiment results are saved.${NC}"
     }
 
+    # ── Ensure we are on the base branch for the next cycle ──
+    git checkout "$EXP_BASE_BRANCH" 2>/dev/null || true
+
     # ── Extract verdict and GPU hours, record in state ──
     local results_path
     results_path="$(results_dir_for_spec "$spec_file")"
@@ -1279,9 +1546,16 @@ with open('$PROGRAM_STATE_FILE') as f:
     local gpu_hours
     gpu_hours=$(extract_gpu_hours "$results_path/metrics.json")
 
-    record_cycle_result "$next_question" "$verdict" "$gpu_hours" "$spec_file"
+    # ── Ratchet: revert source code on REFUTED/INCONCLUSIVE/ERROR ──
+    local reverted=false
+    if [[ "$verdict" == "REFUTED" || "$verdict" == "INCONCLUSIVE" || "$verdict" == "ERROR" ]]; then
+      ratchet_revert
+      reverted=true
+    fi
 
-    echo -e "\n${GREEN}Cycle complete:${NC} $verdict (${gpu_hours}h GPU)"
+    record_cycle_result "$next_question" "$verdict" "$gpu_hours" "$spec_file" "$reverted"
+
+    echo -e "\n${GREEN}Cycle complete:${NC} $verdict (${gpu_hours}h GPU)${reverted:+ [reverted]}"
 
     # ── Warn on consecutive INCONCLUSIVE ──
     if [[ "$verdict" == "INCONCLUSIVE" ]]; then
@@ -1401,9 +1675,17 @@ case "${1:-help}" in
     echo "  full        <question> <spec-file> Run survey -> frame -> run -> read -> log"
     echo "  batch     <spec1> <spec2> ...   Run RUN+sync in parallel for multiple specs"
     echo "  status                             Show research program status"
-    echo "  program     [--max-cycles N] [--dry-run]  Auto-advance through research questions"
+    echo "  program     [opts]                        Auto-advance through research questions"
     echo "  synthesize  [reason]               Generate synthesis report"
     echo "  watch       [phase]                Live-tail a running phase (--resolve for summary)"
+    echo ""
+    echo "Program mode flags:"
+    echo "  --max-cycles N       Max experiment cycles (default: \$MAX_PROGRAM_CYCLES)"
+    echo "  --time-budget SECS   Hard wall-clock limit per RUN phase"
+    echo "  --wall-hours H       Total wall-clock budget for the program loop"
+    echo "  --skip-handoffs      Auto-archive handoffs instead of pausing"
+    echo "  --overnight          Shorthand: --skip-handoffs + 2h default time budget"
+    echo "  --dry-run            Preview what would run without executing"
     echo ""
     echo "Environment:"
     echo "  SRC_DIR='src'                  Source / model code directory"
@@ -1413,10 +1695,12 @@ case "${1:-help}" in
     echo "  EVAL_CMD='...'                 Evaluation command"
     echo "  TEST_CMD='...'                 Unit test command"
     echo "  EXP_LOG_DIR='/tmp/exp-<project>'  Log directory (auto-derived from repo name)"
+    echo "  EXP_TIME_BUDGET='0'            Per-RUN time budget in seconds (0=auto from spec)"
     echo "  MAX_GPU_HOURS='4'              Budget per experiment"
     echo "  MAX_RUNS='10'                  Max training runs per experiment"
     echo "  MAX_PROGRAM_CYCLES='10'        Max cycles in program mode"
     echo "  MAX_PROGRAM_GPU_HOURS='40'     Total GPU budget for program mode"
+    echo "  MAX_PROGRAM_WALL_HOURS='0'     Wall-clock budget for program mode (0=unlimited)"
     echo "  INCONCLUSIVE_THRESHOLD='3'     Max consecutive INCONCLUSIVE before skipping"
     echo "  EXP_AUTO_MERGE='false'         Auto-merge PR after creation"
     echo "  EXP_BASE_BRANCH='main'         Base branch for PRs"
