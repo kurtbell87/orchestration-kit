@@ -12,7 +12,7 @@ Everything else kit-related: `.kit/`
 | Kit | Script | Phases |
 |-----|--------|--------|
 | **TDD** | `.kit/tdd.sh` | red, green, refactor, ship, full, watch |
-| **Research** | `.kit/experiment.sh` | survey, frame, run, read, log, cycle, full, program, status |
+| **Research** | `.kit/experiment.sh` | survey, frame, run, read, log, cycle, full, batch, program, status |
 | **Math** | `.kit/math.sh` | survey, specify, construct, formalize, prove, polish, audit, log, full, program, status |
 
 ## Orchestrator (Advanced)
@@ -80,6 +80,38 @@ source .orchestration-kit.env
 - **`kit.active`** — List all background processes launched by the MCP server (run_id, pid, status, exit_code).
 - **`kit.kill`** — Terminate a background process by run_id (SIGTERM/SIGKILL).
 - **`kit.runs`** — Now shows runs immediately at launch (not just after completion). Includes `is_orphaned` flag for dead processes.
+
+## Research: Overnight Mode
+
+For unattended autonomous research execution:
+
+```bash
+# Overnight: auto-skip handoffs, 2h per-experiment time budget, notification on completion
+.kit/experiment.sh program --overnight
+
+# With explicit budgets
+.kit/experiment.sh program --overnight --max-cycles 20 --wall-hours 12
+
+# Full control
+.kit/experiment.sh program --time-budget 3600 --wall-hours 8 --skip-handoffs --max-cycles 15
+```
+
+**Behavior:**
+- **Ratchet:** REFUTED/INCONCLUSIVE/ERROR experiments auto-revert source code changes. Only CONFIRMED keeps code.
+- **Time budget:** Hard wall-clock kill per RUN phase (default 2h, or 2x spec's `estimated_wall_hours`).
+- **Skip handoffs:** HANDOFF.md auto-archived instead of pausing the loop.
+- **Wall-clock budget:** `--wall-hours` caps total program runtime.
+- **Synthesis on all exits:** Always generates a report before stopping.
+- **macOS notification:** Desktop alert on completion.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--overnight` | — | Shorthand: `--skip-handoffs` + 2h time budget |
+| `--time-budget SECS` | 0 (auto) | Hard wall-clock limit per RUN phase |
+| `--wall-hours H` | 0 (unlimited) | Total wall-clock budget for program loop |
+| `--skip-handoffs` | false | Auto-archive handoffs instead of pausing |
+| `--max-cycles N` | 10 | Max experiment cycles |
+| `--dry-run` | false | Preview without executing |
 
 ## Don't
 
