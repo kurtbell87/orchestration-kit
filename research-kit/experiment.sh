@@ -394,16 +394,33 @@ complete_handoff() {
 # ──────────────────────────────────────────────────────────────
 
 run_survey() {
-  local question="${1:?Usage: experiment.sh survey <research-question-or-topic>}"
+  local question="${1:?Usage: experiment.sh survey <research-question-or-topic> [--pi-directive '...']}"
+  shift || true
+
+  # Parse optional --pi-directive flag
+  local pi_directive=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pi-directive) pi_directive="${2:?--pi-directive requires a value}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
 
   echo ""
   echo -e "${CYAN}======================================================${NC}"
   echo -e "${CYAN}  SURVEY PHASE -- Prior Work & Codebase Review${NC}"
   echo -e "${CYAN}======================================================${NC}"
   echo -e "  Question: $question"
+  [ -n "$pi_directive" ] && echo -e "  PI directive: $pi_directive"
   echo ""
 
   export EXP_PHASE="survey"
+
+  # Build PI directive context block (empty if not provided)
+  local pi_context=""
+  if [ -n "$pi_directive" ]; then
+    pi_context="- **PI directive (CRITICAL — this is the research lead's specific intent):** $pi_directive"
+  fi
 
   local exit_code=0
   claude \
@@ -412,6 +429,7 @@ run_survey() {
 
 ## Context
 - Research question / topic: $question
+${pi_context}
 - Source directory: $SRC_DIR
 - Existing experiments: $(list_experiment_specs | wc -l | tr -d ' ') spec(s) in $EXPERIMENTS_DIR (use Glob to discover)
 - Existing results: $(list_result_dirs | wc -l | tr -d ' ') result dir(s) in $RESULTS_DIR (use Glob to discover)
@@ -864,13 +882,17 @@ run_cycle() {
 
 run_full() {
   # survey -> frame -> run -> read -> log
-  local question="${1:?Usage: experiment.sh full <question> <spec-file>}"
-  local spec_file="${2:?Usage: experiment.sh full <question> <spec-file>}"
+  local question="${1:?Usage: experiment.sh full <question> <spec-file> [--pi-directive '...']}"
+  local spec_file="${2:?Usage: experiment.sh full <question> <spec-file> [--pi-directive '...']}"
+  shift 2 || true
+
+  # Forward remaining args (e.g., --pi-directive) to survey
+  local extra_args=("$@")
 
   echo -e "${BOLD}Running full research cycle: SURVEY -> FRAME -> RUN -> READ -> LOG${NC}"
   echo ""
 
-  run_survey "$question"
+  run_survey "$question" "${extra_args[@]}"
   echo -e "\n${YELLOW}--- Survey complete. Designing experiment... ---${NC}\n"
 
   run_frame "$spec_file"

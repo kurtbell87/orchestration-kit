@@ -58,7 +58,12 @@ Before committing to a protocol, estimate wall time from the actual data size. R
    - **Does the protocol fit the tier budget?** If not, simplify.
    - When should you stop early?
 7. **Write the experiment spec** to the specified file path. Include `**Tier:** Quick|Standard|Heavy` at the top of the Resource Budget section.
-8. **Self-review**: Does the hypothesis have a clear direction AND magnitude? Are the success criteria binary? Could a skeptic find an obvious confound you haven't addressed? **Is the protocol proportional to the question's importance?**
+8. **Data validation pre-flight**: Before finalizing the spec, verify that the available data is compatible with the experiment design:
+   - Does the data span cover the pipeline's requirements? (e.g., if the pipeline needs N days of baseline + M days of event window, does the data have at least N+M days per sample?)
+   - Are the data windows (panels, rolling windows, lookback periods) compatible with the normalization/feature engineering requirements?
+   - Does the dataset actually contain the events/samples the spec references? (e.g., if the spec says "all 84 events," confirm 84 events exist in the data, not just SEC-confirmed ones)
+   - If the survey or prior experiments mention data limitations, address them explicitly in the spec.
+9. **Self-review**: Does the hypothesis have a clear direction AND magnitude? Are the success criteria binary? Could a skeptic find an obvious confound you haven't addressed? **Is the protocol proportional to the question's importance?**
 
 ## Experiment Spec Structure
 
