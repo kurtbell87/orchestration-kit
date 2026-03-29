@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+bash "$ROOT_DIR/tools/deprecation-guard.sh" "tools/mcp-serve"
+
 export ORCHESTRATION_KIT_ROOT="${ORCHESTRATION_KIT_ROOT:-$ROOT_DIR}"
 export ORCHESTRATION_KIT_MCP_HOST="${ORCHESTRATION_KIT_MCP_HOST:-127.0.0.1}"
 export ORCHESTRATION_KIT_MCP_PORT="${ORCHESTRATION_KIT_MCP_PORT:-7337}"

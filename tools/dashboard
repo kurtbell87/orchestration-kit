@@ -21,6 +21,12 @@ import os
 import sys
 from pathlib import Path
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+from deprecation_guard import require_legacy_override
+
 # Ensure the repo root is on sys.path so ``import dashboard`` resolves.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -83,4 +89,5 @@ from dashboard import (  # noqa: E402, F401
 )
 
 if __name__ == "__main__":
+    require_legacy_override("tools/dashboard")
     raise SystemExit(main(sys.argv[1:]))

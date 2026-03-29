@@ -14,6 +14,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+from deprecation_guard import require_legacy_override
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _OK_ROOT = Path(os.environ["ORCHESTRATION_KIT_ROOT"]) if os.environ.get("ORCHESTRATION_KIT_ROOT") else REPO_ROOT
 REQUESTS_DIR = _OK_ROOT / "interop" / "requests"
@@ -435,6 +441,8 @@ def execute_one(request_path: Path, *, json_out: bool) -> int:
 
 
 def main(argv: list[str]) -> int:
+    require_legacy_override("tools/pump")
+
     parser = argparse.ArgumentParser(prog="tools/pump", add_help=True)
     parser.add_argument("--once", action="store_true", help="Execute one request")
     parser.add_argument("--request", default=None, help="Request id or request file path")

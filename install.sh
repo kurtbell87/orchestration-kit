@@ -68,6 +68,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+bash "$SCRIPT_DIR/tools/deprecation-guard.sh" "install.sh"
+
 # ── Detect mode ──────────────────────────────────────────────────────────────
 
 if [[ "$CURRENT_DIR" == "$SCRIPT_DIR" ]]; then
